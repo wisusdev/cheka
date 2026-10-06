@@ -4,33 +4,41 @@ Entorno local de desarrollo PHP al estilo de **Laravel Valet**, para Ubuntu.
 Cada carpeta dentro de `~/Sites` se publica sola como `http://<carpeta>.test`, con la
 versión de PHP que elijas por proyecto, MariaDB y HTTPS local.
 
-- **Un solo archivo bash** (`cheka`, unas 1.300 líneas), sin Docker.
+- **Un solo binario en Rust**, sin Docker. Un daemon (`cheka.service`) publica solas las
+  carpetas nuevas y atiende a la CLI, así que el uso diario no pide contraseña.
 - Reutiliza lo que Ubuntu ya trae: **Apache** (los `.htaccess` funcionan tal cual), **MariaDB** y **systemd**.
 - Proyectos soportados: WordPress (single y Multisite, por subdirectorios o subdominios), Laravel, CodeIgniter 3 y 4, Bedrock y PHP sin framework.
 
-> Versión 0.1.0, probada en Ubuntu 26.04 con Apache 2.4.66, PHP 8.5 y MariaDB 11.8.
-> Para la arquitectura interna y el plan para portarlo a macOS y Windows, consulta
-> [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).
+> Versión 0.2.0, probada en Ubuntu 26.04 con Apache 2.4.66, PHP 8.5 y MariaDB 11.8.
+> La versión original en bash (0.1.0) se conserva en `legacy/cheka.sh` como referencia para
+> las pruebas de paridad. Para la arquitectura interna y el plan para macOS y Windows,
+> consulta [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).
 
 ---
 
 ## Instalación
 
+Necesitas Rust ([rustup](https://rustup.rs)) para compilar:
+
 ```bash
-sudo ~/cheka/cheka install
+cd ~/cheka
+cargo build --release
+sudo ./target/release/cheka install
 ```
 
 La instalación es **idempotente**: puedes repetirla sin problema, y es la forma de aplicar
-cambios después de editar el script. Hace lo siguiente:
+una versión nueva después de compilarla. Hace lo siguiente:
 
 1. Instala `phpX.Y-fpm`, `dnsmasq-base`, `libnss3-tools` y `mkcert`.
-2. Copia el script a `/usr/local/bin/cheka` y crea `~/Sites`.
+2. Copia el binario a `/usr/local/bin/cheka`, crea `~/Sites` y, si venías de la versión en
+   bash, migra tu estado a `~/.config/cheka/cheka.toml`.
 3. Configura el DNS para que solo `*.test` vaya a un dnsmasq local en `127.0.0.1:5300`.
 4. Deja PHP-FPM corriendo con tu usuario.
 5. Cambia Apache de `mod_php` + `prefork` a `mpm_event` + `proxy_fcgi`, y lo pone a correr con tu usuario.
 6. Crea en MariaDB el usuario `<tu-usuario>`, que entra sin contraseña por socket, y el usuario `cheka`/`secret`, para los proyectos.
 7. Instala la CA local de mkcert en el sistema y en los navegadores.
-8. Verifica que `*.test` resuelva y que el DNS normal siga funcionando.
+8. Activa el daemon `cheka.service` y verifica que `*.test` resuelva, que el DNS normal siga
+   funcionando y que el daemon responda.
 
 Para desinstalar:
 
@@ -40,6 +48,37 @@ sudo cheka uninstall --purge    # también borra /opt/cheka, /etc/cheka y ~/.con
 ```
 
 Tus proyectos en `~/Sites` nunca se tocan.
+
+### Tu configuración: `~/.config/cheka/cheka.toml`
+
+```toml
+version = 1
+tld = "test"
+default_php = "8.5"
+paths = ["/home/tu-usuario/Sites"]
+
+[links]                       # cheka link
+api = "/home/tu-usuario/proyectos/api"
+
+[sites.blog]                  # cheka isolate / secure / docroot
+php = "8.2"
+secure = true
+
+[db]                          # credenciales que usan tus proyectos
+user = "cheka"
+password = "secret"
+```
+
+Normalmente lo escriben los comandos, pero puedes editarlo a mano; el daemon aplica los
+cambios solo. `cheka migrate --dry-run` muestra cómo quedaría el estado sin escribir nada, y
+`cheka migrate --legacy` lo vuelve a escribir en el formato de la versión en bash.
+
+**Volver a la versión en bash** (por ejemplo, si algo falla):
+
+```bash
+cheka migrate --legacy
+sudo systemctl disable --now cheka && sudo ~/cheka/legacy/cheka.sh install
+```
 
 ---
 
@@ -184,8 +223,8 @@ sobrescribe.
 - **Subsitios de Multisite:** los creados después con `cheka wp site create` se registran con
   `http://` aunque el sitio principal use HTTPS. Responden igual por HTTPS.
 - **Detección al clonar:** si clonas un repositorio grande, durante unos segundos puede
-  detectarse como `php`. El temporizador lo corrige en un minuto o menos; si no quieres
-  esperar, ejecuta `cheka refresh`.
+  detectarse como `php`. El daemon lo corrige en un minuto o menos; si no quieres esperar,
+  ejecuta `cheka refresh`.
 
 ---
 
@@ -196,18 +235,34 @@ sobrescribe.
 | `x.test` no abre | `cheka status`, que incluye la prueba de DNS, y `resolvectl query x.test` |
 | "cheka: no hay un sitio para este dominio" | El nombre no coincide con ninguna carpeta: `cheka sites` |
 | Error 502 o 503 | El PHP-FPM de esa versión: `systemctl status cheka-php@8.2` |
-| Cambios que no aparecen | `cheka refresh` y `journalctl -u cheka-refresh -n 20` |
+| Cambios que no aparecen | `cheka refresh` y `journalctl -u cheka -n 20` (el daemon) |
 | Errores de PHP | `cheka log` |
 | Apache no recarga | `sudo apache2ctl -t`. cheka valida antes de recargar y, si algo falla, restaura la configuración anterior. |
 
 ---
 
+## Desarrollo
+
+```bash
+cargo build                 # target/debug/cheka
+cargo test                  # unitarias, paridad contra legacy/cheka.sh, install y daemon
+cargo clippy --all-targets
+```
+
+- **Sin root:** con `CHEKA_PREFIX=/ruta CHEKA_CONF=/ruta`, todo se escribe bajo ese prefijo y
+  no se tocan servicios, ni siquiera en `install`.
+- **Paridad:** `tests/parity.rs` ejecuta la versión en bash y la de Rust sobre el mismo
+  proyecto de prueba y compara la salida y los archivos generados byte a byte, y el estado
+  por contenido. Con `PARITY_SHOW=1 cargo test --test parity -- --nocapture` se ve la salida
+  de cada paso.
+- **API del daemon:** socket Unix en `/run/cheka/cheka.sock`, con un JSON por línea
+  (`{"cmd":"ping"}`, `{"cmd":"refresh"}`). Será la base de la UI de bandeja.
+
 ## Pruebas
 
-Esto se ejecutó durante el desarrollo:
+Además de `cargo test`, esto se ejecutó durante el desarrollo:
 
-- **Modo prefijo, sin root.** Con `CHEKA_PREFIX=/ruta CHEKA_CONF=/ruta cheka …` todo se escribe
-  bajo ese prefijo y se omiten `systemctl` y `apache2ctl`. Con esa configuración se levantaron un
+- **Modo prefijo, sin root.** Con esa configuración se levantaron un
   Apache y varios PHP-FPM con el usuario normal en el puerto 8080. Los 6 tipos de proyecto
   respondieron con su carpeta pública y su versión de PHP, y también se probaron los
   subdominios, los archivos estáticos, el 404 y PATH_INFO.
@@ -216,3 +271,5 @@ Esto se ejecutó durante el desarrollo:
   - PHP corriendo con el usuario normal y conexión a MariaDB.
   - `secure`, `link` y `unlink` sin sudo; `localhost` intacto y el vhost comodín para dominios desconocidos.
   - `new` con los cuatro tipos: WordPress Multisite por subdominios con HTTPS y un subsitio, Laravel con sus migraciones en MariaDB, CodeIgniter 4 conectado a la base, y PHP plano.
+  - Una ráfaga de 15 carpetas creadas de golpe se publicó en 431 ms (la versión en bash
+    dejaba de vigilar ante ráfagas; ver la lección 13 de la arquitectura).

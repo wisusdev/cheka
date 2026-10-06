@@ -61,6 +61,10 @@ configuración de cada componente y los mantiene sincronizados.
 
 ### 2.1 Estado del usuario: `~/.config/cheka/` (la fuente de verdad)
 
+> Desde la versión 0.2 (Rust) el estado vive en un solo archivo, `cheka.toml` (formato en
+> §8.4); los certificados siguen en `certs/`. La tabla describe el formato de la versión en
+> bash, que Rust todavía lee y migra; tras migrar, esos archivos quedan en `legacy/`.
+
 | Ruta | Contenido | Escrito por |
 |---|---|---|
 | `config` | Líneas `clave=valor`; hoy solo `default_php=8.5` | `use`, `install` |
@@ -273,6 +277,11 @@ Cada punto costó al menos un fallo durante el desarrollo.
     sistema, así que `.test` no resuelve.
 12. **Laravel nuevo usa SQLite por defecto:** hay que cambiar el `.env` y borrar
     `database/database.sqlite` antes de migrar.
+13. **Una unidad `.path` de systemd no aguanta ráfagas.** Cada cambio en `~/Sites` arranca
+    `cheka-refresh.service`, y systemd limita los arranques por intervalo (`StartLimitBurst`).
+    Con `composer create-project` y varias peticiones seguidas de la CLI se supera el límite
+    y `cheka-watch.path` queda en `failed (unit-start-limit-hit)`, sin avisar a nadie. El daemon
+    en Rust lo evita agrupando eventos (*debounce*) y sin arrancar un servicio por evento.
 
 ---
 
@@ -482,13 +491,43 @@ password = "secret"
 1. **Paridad en Linux.** Reimplementar el comportamiento actual en Rust, leyendo el estado de
    la versión en bash y migrándolo. Usar *golden tests*: comparar los vhosts, pools e inis
    generados con los de la versión en bash. Mantener un modo "prefijo" (raíz falsa, sin
-   servicios) como `CHEKA_PREFIX`, para probar sin root en CI.
+   servicios) como `CHEKA_PREFIX`, para probar sin root en CI. Hitos:
+   - **1.1 ✅** Núcleo (rutas, estado en el formato de bash, sitios, detección, plantillas
+     minijinja, `refresh`) y comandos de lectura (`sites`, `paths`, `versions`, `which-php`,
+     `php`, `composer`, `status`, `migrate`), más `php:install` sin descarga. El binario se
+     llama `cheka-rs` mientras convive con el script. `tests/parity.rs` compara byte a byte
+     contra el script de bash.
+   - **1.2 ✅** Comandos que modifican el estado (`park`, `forget`, `link`, `unlink`,
+     `isolate`, `unisolate`, `use`, `docroot`, `secure`, `unsecure`, `open`, `log`, `db`,
+     `wp`, `new`, `start/stop/restart`) y la descarga de binarios de PHP. La paridad cubre
+     una secuencia de 42 pasos (estado y archivos finales idénticos) y `db` contra el
+     MariaDB real. `new` (WordPress Multisite + HTTPS, Laravel, CodeIgniter) se probó en el
+     sistema real usando el vigilante instalado, sin sudo.
+   - **1.3 ✅** `install`/`uninstall` y el daemon `cheka.service` (`cheka daemon`): API por
+     socket Unix en `/run/cheka/cheka.sock` (JSON por línea; autoriza con `SO_PEERCRED` solo a
+     root y al dueño de los proyectos), vigilancia con `notify` + *debounce* y refresh cada
+     minuto. Reemplaza a `cheka-watch.path`, `cheka-refresh.timer` y `.refresh-request`, que
+     `install` retira. `install`/`uninstall` funcionan en modo prefijo para probarlos sin root;
+     `tests/daemon_install.rs` compara las unidades contra el `write_units` de bash y prueba el
+     daemon en vivo (API, carpetas nuevas, rutas aparcadas después de arrancar).
+   - **1.4 ✅** El estado vive en `cheka.toml`. El primer guardado (o `install`, o `cheka
+     migrate`) migra el formato de bash y aparta los archivos viejos en `legacy/`; `cheka
+     migrate --legacy` hace el camino inverso. Las credenciales de la base pasan a `[db]`.
+     El binario se llama `cheka`, el script de bash se movió a `legacy/cheka.sh` y Rust ya
+     no genera unidades heredadas. La paridad compara salidas y archivos byte a byte y el
+     estado por contenido.
 2. **macOS.** `platform/macos.rs`: Homebrew `httpd` + launchd + `/etc/resolver/test` +
    static-php-cli para macOS. Reutiliza casi todo de Linux.
 3. **Windows.** `platform/windows.rs`: Apache Lounge + `mod_fcgid` + PHP NTS de
    `releases.json`, servicio de Windows, named pipe y DNS (primero el archivo `hosts`, luego
    NRPT + DNS integrado).
-4. **Extras.** DNS integrado en todas las plataformas (deja de depender de dnsmasq), PHP 7.4
+4. **UI de bandeja (estilo PHP Monitor).** App en [Tauri](https://tauri.app) que es otro
+   cliente del daemon, igual que la CLI. Gestiona sitios (abrir, HTTPS, versión de PHP,
+   carpeta pública), versiones de PHP, extensiones, servicios, bases de datos, logs y el
+   asistente de `new`. Requiere el IPC del hito 1.3; el núcleo ya es una biblioteca (`src/lib.rs`)
+   para poder reutilizarlo. **Pendiente de decidir:** cómo gestionar extensiones con los PHP
+   estáticos de Linux, que no cargan `.so` (otro origen de PHP o compilar con static-php-cli).
+5. **Extras.** DNS integrado en todas las plataformas (deja de depender de dnsmasq), PHP 7.4
    donde exista (Windows y macOS vía Homebrew), `cheka share` (túnel) y quizá un icono en la
    bandeja.
 
