@@ -1,0 +1,9 @@
+# Editores y sistema
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Futuro port en Rust
+/target/
