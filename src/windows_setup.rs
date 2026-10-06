@@ -393,9 +393,15 @@ pub fn install_apache(ctx: &Ctx) -> Result<()> {
     }
     if system::windows_service_state(APACHE_SERVICE).is_none() {
         ui::info(format!("Registrando el servicio {APACHE_SERVICE}…"));
-        let st = Command::new(httpd(l)).args(["-k", "install", "-n", APACHE_SERVICE]).stdout(Stdio::null()).status()?;
-        if !st.success() {
-            bail!("No pude registrar el servicio {APACHE_SERVICE}");
+        // httpd imprime avisos genéricos ("Errors reported here must be corrected…") aunque
+        // todo esté bien: solo se muestran si falla.
+        let out = Command::new(httpd(l)).args(["-k", "install", "-n", APACHE_SERVICE]).output()?;
+        if !out.status.success() {
+            bail!(
+                "No pude registrar el servicio {APACHE_SERVICE}:\n{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
     }
     ctx.sys.enable(APACHE_SERVICE, false)?;
