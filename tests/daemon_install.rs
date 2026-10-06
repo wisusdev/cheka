@@ -299,3 +299,63 @@ fn ajustes_y_extensiones_de_php() {
     assert!(!fs::read_to_string(env.conf.join("cheka.toml")).unwrap().contains(".extensions]"), "sin ajustes redundantes");
     assert!(!env.run(&["php:ext", v, "enable", "no-existe"]).status.success());
 }
+
+/// `cheka tools install` con un catálogo de prueba (solo pasos del usuario: sin sudo).
+#[test]
+fn herramientas_con_catalogo_de_prueba() {
+    let env = Env::new();
+    let out_dir = env.base.join("salida");
+    fs::create_dir_all(&out_dir).unwrap();
+    let catalog = env.base.join("tools.toml");
+    fs::write(
+        &catalog,
+        format!(
+            r#"
+[[tool]]
+id = "base"
+name = "Base"
+category = "Prueba"
+detect = "test -f {o}/base"
+user = "echo base > {o}/base"
+
+[[tool]]
+id = "depende"
+name = "Depende de base"
+category = "Prueba"
+requires = ["base"]
+detect = "test -f {o}/depende"
+user = "test -f {o}/base && echo ok > {o}/depende"
+
+[[tool]]
+id = "rota"
+name = "Rota"
+category = "Prueba"
+detect = "false"
+user = "echo antes; false; echo nunca > {o}/nunca"
+"#,
+            o = out_dir.display()
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| env.cmd(args).env("CHEKA_TOOLS", &catalog).output().unwrap();
+
+    let list: serde_json::Value = serde_json::from_slice(&run(&["tools", "--json"]).stdout).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 3);
+    assert!(list.as_array().unwrap().iter().all(|t| t["installed"] == false));
+
+    // `depende` arrastra a `base` y se instalan en orden
+    let out = run(&["tools", "install", "depende"]);
+    assert_ok(&out);
+    assert_eq!(fs::read_to_string(out_dir.join("depende")).unwrap(), "ok\n");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("::cheka-tool"), "los marcadores no se muestran");
+    let list: serde_json::Value = serde_json::from_slice(&run(&["tools", "--json"]).stdout).unwrap();
+    assert_eq!(list.as_array().unwrap().iter().filter(|t| t["installed"] == true).count(), 2);
+
+    // una herramienta que falla: se detiene en el error (set -e) y el comando falla
+    let out = run(&["tools", "install", "rota"]);
+    assert!(!out.status.success());
+    assert!(!out_dir.join("nunca").exists());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Rota"));
+
+    assert!(!run(&["tools", "install", "no-existe"]).status.success());
+}

@@ -173,6 +173,12 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Herramientas de desarrollo: list | install <id>…
+    #[command(disable_help_flag = true)]
+    Tools {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Inicia los servicios
     Start,
     /// Detiene los servicios
@@ -226,6 +232,7 @@ fn run(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Daemon => cheka::daemon::run(ctx),
         Cmd::Services { args } => commands::service::list(ctx, &args),
         Cmd::Service { args } => commands::service::service(ctx, &args),
+        Cmd::Tools { args } => commands::tools::tools(ctx, &args),
         Cmd::Start => commands::services(ctx, "start"),
         Cmd::Stop => commands::services(ctx, "stop"),
         Cmd::Restart => commands::services(ctx, "restart"),

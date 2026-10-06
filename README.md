@@ -176,6 +176,15 @@ Los ajustes y extensiones se guardan en `cheka.toml` (`[php."8.5".ini]` y
 solo se pueden gestionar en el PHP de apt; los binarios estáticos (8.0–8.4) traen las suyas
 compiladas, aunque sus ajustes sí se pueden cambiar.
 
+### Herramientas de desarrollo
+
+`cheka tools` lista un catálogo de herramientas (navegadores, editores, Node, Go, Rust,
+Flutter, PostgreSQL, MongoDB, Ollama…) y marca las que ya tienes; `cheka tools install rust go`
+las instala. Pide la contraseña una sola vez para los pasos de sistema y hace como tu
+usuario los que van en tu home (nvm, rustup, Android Studio, el PATH en `~/.bashrc` y fish).
+El catálogo está en [`tools/linux.toml`](tools/linux.toml) y es fácil de ampliar. PHP,
+Apache y MariaDB no están ahí porque los gestiona cheka. En la UI es la página **Herramientas**.
+
 ### Base de datos (MariaDB)
 
 | Comando | Qué hace |

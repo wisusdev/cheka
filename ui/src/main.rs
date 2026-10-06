@@ -126,6 +126,95 @@ async fn service_logs(id: String) -> Result<Value, String> {
     json(&["service", &id, "logs", "--json"])
 }
 
+/// Catálogo de herramientas con su estado.
+#[tauri::command]
+async fn tools() -> Result<Value, String> {
+    json(&["tools", "--json"])
+}
+
+fn valid_tool_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Ejecuta un comando enviando cada línea a la UI (evento `tools-output`); devuelve el
+/// resultado de cada herramienta según las líneas `::cheka-tool ok|fail <id>`.
+fn stream_tools_phase(app: &AppHandle, mut cmd: Command) -> std::collections::BTreeMap<String, bool> {
+    let mut results = std::collections::BTreeMap::new();
+    let Ok(mut child) = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() else {
+        let _ = app.emit("tools-output", OutputLine { line: "No pude ejecutar cheka".into(), error: true });
+        return results;
+    };
+    let err = child.stderr.take().unwrap();
+    let app2 = app.clone();
+    let err_thread = std::thread::spawn(move || {
+        for line in BufReader::new(err).lines().map_while(Result::ok) {
+            let _ = app2.emit("tools-output", OutputLine { line, error: true });
+        }
+    });
+    for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
+        if let Some(rest) = line.strip_prefix("::cheka-tool ") {
+            if let Some((state, id)) = rest.split_once(' ') {
+                results.insert(id.trim().to_string(), state == "ok");
+            }
+        } else {
+            let _ = app.emit("tools-output", OutputLine { line, error: false });
+        }
+    }
+    let _ = err_thread.join();
+    let _ = child.wait();
+    results
+}
+
+#[derive(Clone, Serialize)]
+struct ToolsDone {
+    ok: Vec<String>,
+    failed: Vec<String>,
+}
+
+/// Instala herramientas: los pasos de root con un solo pkexec y luego los del usuario.
+#[tauri::command]
+async fn install_tools(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
+    if ids.is_empty() || !ids.iter().all(|i| valid_tool_id(i)) {
+        return Err("Selección inválida".into());
+    }
+    let mut plan_args = vec!["tools", "plan"];
+    plan_args.extend(ids.iter().map(String::as_str));
+    let plan = json(&plan_args)?;
+    let steps: Vec<(String, bool)> = plan
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| Some((s["id"].as_str()?.to_string(), s["needs_root"].as_bool()?)))
+        .collect();
+    std::thread::spawn(move || {
+        let all: Vec<String> = steps.iter().map(|(id, _)| id.clone()).collect();
+        let mut root_ok = std::collections::BTreeMap::new();
+        if steps.iter().any(|(_, root)| *root) {
+            let mut cmd = Command::new("pkexec");
+            cmd.arg(cheka_bin()).args(["tools", "_root"]).args(&all);
+            root_ok = stream_tools_phase(&app, cmd);
+            if root_ok.is_empty() {
+                let _ = app.emit("tools-output", OutputLine { line: "Se canceló la autorización".into(), error: true });
+            }
+        }
+        let user_ids: Vec<String> = all
+            .iter()
+            .filter(|id| root_ok.get(*id).copied().unwrap_or(!steps.iter().any(|(_, r)| *r)))
+            .cloned()
+            .collect();
+        let mut user_ok = std::collections::BTreeMap::new();
+        if !user_ids.is_empty() {
+            let mut cmd = Command::new(cheka_bin());
+            cmd.args(["tools", "_user"]).args(&user_ids);
+            user_ok = stream_tools_phase(&app, cmd);
+        }
+        let (ok, failed): (Vec<String>, Vec<String>) =
+            all.into_iter().partition(|id| user_ok.get(id).copied().unwrap_or(false));
+        let _ = app.emit("tools-done", ToolsDone { ok, failed });
+    });
+    Ok(())
+}
+
 /// Versiones instaladas con actualización disponible (consulta la red).
 #[tauri::command]
 async fn php_updates() -> Result<Value, String> {
@@ -320,6 +409,8 @@ fn main() {
             php_updates,
             services,
             service_logs,
+            tools,
+            install_tools,
             read_log,
             run,
             link_folder,

@@ -16,6 +16,7 @@ pub mod report;
 pub mod sites;
 pub mod state;
 pub mod system;
+pub mod tools;
 pub mod ui;
 pub mod userfs;
 pub mod util;

@@ -4,6 +4,7 @@ pub mod db;
 pub mod new;
 pub mod phpcmd;
 pub mod service;
+pub mod tools;
 pub mod site;
 
 use std::ffi::OsString;

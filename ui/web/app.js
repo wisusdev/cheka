@@ -648,6 +648,95 @@ $("#link-form").addEventListener("submit", (e) => {
   });
 });
 
+// ------------------------------------------------------------------ herramientas ----
+
+state.tools = null;
+state.installingTools = false;
+
+async function loadTools() {
+  try {
+    state.tools = await invoke("tools");
+  } catch (e) {
+    toast(String(e), true);
+    return;
+  }
+  renderTools();
+}
+
+function selectedTools() {
+  return [...document.querySelectorAll("#tools-list input:checked")].map((i) => i.value);
+}
+
+function updateToolsButton() {
+  const n = selectedTools().length;
+  const btn = $("#tools-install");
+  btn.disabled = n === 0 || state.installingTools;
+  btn.textContent = state.installingTools ? "Instalando…" : n ? `Instalar seleccionadas (${n})` : "Instalar seleccionadas";
+}
+
+function renderTools() {
+  const tools = state.tools ?? [];
+  const keep = new Set(selectedTools());
+  const groups = new Map();
+  for (const t of tools) {
+    if (!groups.has(t.category)) groups.set(t.category, []);
+    groups.get(t.category).push(t);
+  }
+  $("#tools-list").replaceChildren(
+    ...[...groups].map(([category, list]) =>
+      h("section", { class: "tool-group" },
+        h("h2", {}, category),
+        h("div", { class: "tool-grid" },
+          ...list.map((t) => {
+            const box = h("input", { type: "checkbox", value: t.id, disabled: state.installingTools });
+            box.checked = keep.has(t.id);
+            box.addEventListener("change", updateToolsButton);
+            return h("label", { class: "tool" },
+              box,
+              h("div", {},
+                h("div", {}, h("span", { class: "name" }, t.name), " ",
+                  t.installed && h("span", { class: "badge ok" }, "instalada"),
+                  t.needs_root && !t.installed && h("span", { class: "badge", title: "Pide tu contraseña" }, "sistema")),
+                (t.description || t.installed) && h("div", { class: "desc" },
+                  t.description, t.installed && t.description ? " · " : "", t.installed ? "Volver a instalarla la actualiza" : "")));
+          })))
+    )
+  );
+  updateToolsButton();
+}
+
+$("#tools-install").addEventListener("click", async () => {
+  const ids = selectedTools();
+  if (!ids.length || state.installingTools) return;
+  state.installingTools = true;
+  renderTools();
+  const consoleEl = $("#tools-console");
+  consoleEl.replaceChildren();
+  consoleEl.classList.remove("hidden");
+  try {
+    await invoke("install_tools", { ids });
+  } catch (e) {
+    state.installingTools = false;
+    renderTools();
+    toast(String(e), true);
+  }
+});
+
+listen("tools-output", ({ payload }) => {
+  const consoleEl = $("#tools-console");
+  consoleEl.append(h("span", { class: payload.error ? "err" : "" }, payload.line + "\n"));
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+});
+
+listen("tools-done", ({ payload }) => {
+  state.installingTools = false;
+  const names = (ids) => ids.map((id) => state.tools?.find((t) => t.id === id)?.name ?? id).join(", ");
+  if (payload.failed.length) toast(`Con errores: ${names(payload.failed)}. Revisa la salida.`, true);
+  if (payload.ok.length) toast(`Instalado: ${names(payload.ok)}. Abre una terminal nueva para cargar el PATH.`);
+  for (const box of document.querySelectorAll("#tools-list input")) box.checked = false;
+  loadTools();
+});
+
 // ------------------------------------------------------------------ navegación ----
 
 function showPage(page) {
@@ -656,6 +745,7 @@ function showPage(page) {
   for (const el of document.querySelectorAll(".page")) el.classList.toggle("active", el.id === `page-${page}`);
   if (page === "logs") loadLogs();
   if (page === "services") loadServices();
+  if (page === "tools" && !state.tools) loadTools();
   if (page === "php") {
     if (state.phpDetail) loadPhpDetail();
     if (!Object.keys(state.updates).length) checkUpdates();
