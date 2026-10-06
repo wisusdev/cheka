@@ -2,6 +2,7 @@
 
 pub mod db;
 pub mod new;
+pub mod phpcmd;
 pub mod site;
 
 use std::ffi::OsString;
@@ -11,10 +12,9 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::detect::detect;
 use crate::layout::TLD;
 use crate::util::{is_executable, mkdir, which, write, write_mode};
-use crate::{Ctx, php, refresh, render, sites, ui};
+use crate::{Ctx, php, refresh, render, report, sites, ui};
 
 pub fn refresh(ctx: &Ctx, quiet: bool) -> Result<()> {
     ui::set_quiet(quiet);
@@ -22,19 +22,21 @@ pub fn refresh(ctx: &Ctx, quiet: bool) -> Result<()> {
     refresh::run(ctx).map(drop)
 }
 
-pub fn sites(ctx: &Ctx) -> Result<()> {
+fn print_json(value: &impl serde::Serialize) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+pub fn sites(ctx: &Ctx, json: bool) -> Result<()> {
+    let all = report::sites(ctx);
+    if json {
+        return print_json(&all);
+    }
     let c = ui::colors();
     println!("{}{:<24} {:<26} {:<5} {:<34} RUTA{}", c.bold, "SITIO", "TIPO", "PHP", "URL", c.reset);
-    let all = sites::list(&ctx.state);
     for s in &all {
-        let det = detect(&s.path, ctx.state.docroot.get(&s.name).map(String::as_str));
-        let mut v = ctx.state.site_php(&s.name);
-        let scheme = if ctx.state.is_secure(&s.name) { "https" } else { "http" };
-        if !php::installed(&ctx.layout, &v) {
-            v.push('!');
-        }
-        let url = format!("{scheme}://{}.{TLD}", s.name);
-        println!("{:<24} {:<26} {:<5} {:<34} {}", s.name, det.kind.as_str(), v, url, s.path.display());
+        let php = if s.php_installed { s.php.clone() } else { format!("{}!", s.php) };
+        println!("{:<24} {:<26} {:<5} {:<34} {}", s.name, s.kind, php, s.url, s.path);
     }
     if all.is_empty() {
         ui::info("No hay sitios todavía. Crea una carpeta en ~/Sites o usa 'cheka link'.");
@@ -53,14 +55,16 @@ pub fn paths(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-pub fn versions(ctx: &Ctx) -> Result<()> {
-    let def = ctx.state.default_php();
-    for v in php::SUPPORTED {
-        let mark = if v == def { "*" } else { " " };
-        if php::installed(&ctx.layout, v) {
-            println!("{mark} {v}  instalada  {}", php::fpm_bin(&ctx.layout, v).display());
-        } else {
-            println!("{mark} {v}  -");
+pub fn versions(ctx: &Ctx, json: bool) -> Result<()> {
+    let all = report::versions(ctx);
+    if json {
+        return print_json(&all);
+    }
+    for v in &all {
+        let mark = if v.default { "*" } else { " " };
+        match &v.fpm_bin {
+            Some(bin) => println!("{mark} {}  instalada  {bin}", v.version),
+            None => println!("{mark} {}  -", v.version),
         }
     }
     println!("(* = por defecto)");
@@ -99,54 +103,32 @@ pub fn composer(ctx: &Ctx, args: Vec<OsString>) -> Result<()> {
     Err(anyhow!("No pude ejecutar composer: {}", Command::new(&bin).arg(composer).args(args).exec()))
 }
 
-pub fn php_units() -> Vec<String> {
-    Command::new("systemctl")
-        .args(["list-units", "--all", "--plain", "--no-legend", "cheka-php@*.service"])
-        .stderr(Stdio::null())
-        .output()
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter_map(|l| l.split_whitespace().next().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default()
-}
+pub use crate::report::php_units;
 
-fn resolve_host(host: &str) -> Option<std::net::IpAddr> {
-    use std::net::ToSocketAddrs;
-    (host, 0).to_socket_addrs().ok()?.next().map(|a| a.ip())
-}
 
-pub fn status(ctx: &Ctx) -> Result<()> {
+pub fn status(ctx: &Ctx, json: bool) -> Result<()> {
+    let st = report::status(ctx);
+    if json {
+        return print_json(&st);
+    }
     let c = ui::colors();
-    let mut units: Vec<String> = ["apache2", "cheka", "cheka-dns", "mariadb"].map(String::from).into();
-    // Mientras convivan las versiones: el vigilante de bash, solo si sigue instalado.
-    for legacy in ["cheka-watch.path", "cheka-refresh.timer"] {
-        if ctx.layout.units.join(legacy).exists() {
-            units.push(legacy.to_string());
-        }
-    }
-    units.extend(php_units());
-    for u in units {
-        let out = Command::new("systemctl").args(["is-active", &u]).stderr(Stdio::null()).output()?;
-        let state = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if state == "active" {
-            println!("{}●{} {u}", c.green, c.reset);
+    for svc in &st.services {
+        if svc.state == "active" {
+            println!("{}●{} {}", c.green, c.reset, svc.name);
         } else {
-            println!("{}●{} {u} ({state})", c.red, c.reset);
+            println!("{}●{} {} ({})", c.red, c.reset, svc.name, svc.state);
         }
     }
-    let probe = format!("cheka-check.{TLD}");
-    match resolve_host(&probe) {
+    match &st.dns {
         Some(ip) => println!("{}●{} DNS: *.{TLD} → {ip}", c.green, c.reset),
         None => println!("{}●{} DNS: *.{TLD} no resuelve", c.red, c.reset),
     }
-    match crate::ipc::call(&ctx.layout.socket(), &crate::ipc::Request::Ping) {
-        Ok(r) if r.ok => println!("{}●{} API del daemon ({})", c.green, c.reset, ctx.layout.socket().display()),
-        _ => println!("{}●{} API del daemon: no responde", c.red, c.reset),
+    if st.daemon {
+        println!("{}●{} API del daemon ({})", c.green, c.reset, st.socket);
+    } else {
+        println!("{}●{} API del daemon: no responde", c.red, c.reset);
     }
-    println!("PHP por defecto: {}", ctx.state.default_php());
+    println!("PHP por defecto: {}", st.default_php);
     Ok(())
 }
 
@@ -203,7 +185,9 @@ pub fn services(ctx: &Ctx, action: &str) -> Result<()> {
 }
 
 /// Descarga los binarios estáticos (fpm + cli) de la última versión X.Y.* disponible.
-fn download_static_php(ctx: &Ctx, v: &str) -> Result<()> {
+/// Extrae en un temporal y reemplaza con `rename`: es seguro aunque esa versión esté
+/// corriendo (sirve también para actualizar). Devuelve la versión completa instalada.
+pub fn download_static_php(ctx: &Ctx, v: &str) -> Result<String> {
     let arch = std::env::consts::ARCH;
     ui::info(format!("Buscando la última versión de PHP {v}…"));
     let listing = Command::new("curl").args(["-fsSL", &format!("{STATIC_URL}/")]).output()?;
@@ -218,6 +202,8 @@ fn download_static_php(ctx: &Ctx, v: &str) -> Result<()> {
     ui::info(format!("Descargando PHP {full} (fpm + cli)…"));
     let dest = ctx.layout.opt.join(format!("php/{v}"));
     mkdir(&dest)?;
+    let staging = tmp.path().join("x");
+    mkdir(&staging)?;
     for kind in ["fpm", "cli"] {
         let tgz = tmp.path().join(format!("{kind}.tgz"));
         let ok = Command::new("curl")
@@ -229,13 +215,20 @@ fn download_static_php(ctx: &Ctx, v: &str) -> Result<()> {
         if !ok {
             bail!("No pude descargar PHP {full} ({kind})");
         }
-        if !Command::new("tar").arg("xzf").arg(&tgz).arg("-C").arg(&dest).status()?.success() {
+        if !Command::new("tar").arg("xzf").arg(&tgz).arg("-C").arg(&staging).status()?.success() {
             bail!("No pude descomprimir PHP {full} ({kind})");
         }
     }
-    let _ = Command::new("chown").args(["-R", "root:root"]).arg(&dest).stderr(Stdio::null()).status();
+    let _ = Command::new("chown").args(["-R", "root:root"]).arg(&staging).stderr(Stdio::null()).status();
+    for e in std::fs::read_dir(&staging)?.flatten() {
+        // mismo sistema de archivos que /opt no está garantizado: copiar y renombrar dentro de dest
+        let part = dest.join(format!(".{}.nuevo", e.file_name().to_string_lossy()));
+        std::fs::copy(e.path(), &part)?;
+        std::fs::set_permissions(&part, std::fs::metadata(e.path())?.permissions())?;
+        std::fs::rename(&part, dest.join(e.file_name()))?;
+    }
     write(&dest.join("VERSION"), &format!("{full}\n"))?;
-    Ok(())
+    Ok(full)
 }
 
 /// php:install <versión> (root): instala si hace falta y (re)genera su configuración.
@@ -278,6 +271,7 @@ pub fn php_install(ctx: &Ctx, version: &str) -> Result<()> {
         mkdir(&l.bin)?;
         write_mode(&l.bin.join(format!("php{v}")), &render::php_cli_wrapper(l, &v), 0o755)?;
     }
+    crate::phpconf::apply(ctx, &v)?;
     ctx.sys.enable(&php::unit(&v), false).context("systemctl enable")?;
     ctx.sys.restart(&php::unit(&v))?;
     ui::ok(format!("PHP {v} listo ({})", php::fpm_bin(l, &v).display()));
@@ -290,7 +284,7 @@ pub fn fpm(ctx: &Ctx, version: &str) -> Result<()> {
     let dir = php::config_dir(&ctx.layout, version);
     let bin = php::fpm_bin(&ctx.layout, version);
     let err = Command::new(&bin)
-        .env("PHP_INI_SCAN_DIR", format!(":{}", dir.join("conf.d").display()))
+        .env("PHP_INI_SCAN_DIR", crate::phpconf::scan_dir_env(&ctx.layout, version))
         .arg("--nodaemonize")
         .arg("--fpm-config")
         .arg(dir.join("php-fpm.conf"))

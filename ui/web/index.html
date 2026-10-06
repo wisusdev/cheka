@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>cheka</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">
+      <img src="icon.png" alt="" width="28" height="28">
+      <span>cheka</span>
+    </div>
+    <nav>
+      <button class="nav-item active" data-page="sites">Sitios <span class="count" id="sites-count"></span></button>
+      <button class="nav-item" data-page="php">PHP</button>
+      <button class="nav-item" data-page="services">Servicios</button>
+      <button class="nav-item" data-page="new">Nuevo proyecto</button>
+      <button class="nav-item" data-page="logs">Logs</button>
+    </nav>
+    <div class="health" id="health">
+      <div class="health-row"><span class="dot" id="dot-daemon"></span>Daemon</div>
+      <div class="health-row"><span class="dot" id="dot-dns"></span>DNS *.test</div>
+      <div class="health-row"><span class="dot" id="dot-apache"></span>Apache</div>
+    </div>
+  </aside>
+
+  <main>
+    <div class="banner hidden" id="banner" role="alert"></div>
+    <!-- Sitios -->
+    <section class="page active" id="page-sites">
+      <header class="page-head">
+        <div>
+          <h1>Sitios</h1>
+          <p class="muted">Cada carpeta en tus rutas aparcadas se publica sola como <code>carpeta.test</code>.</p>
+        </div>
+        <div class="head-actions">
+          <input type="search" id="site-filter" placeholder="Buscar…" aria-label="Buscar sitios">
+          <button class="btn" id="btn-link">Enlazar carpeta…</button>
+        </div>
+      </header>
+      <form class="inline-form hidden" id="link-form">
+        <input type="text" id="link-path" placeholder="/home/usuario/proyectos/mi-app" required aria-label="Carpeta">
+        <input type="text" id="link-name" placeholder="nombre (opcional)" aria-label="Nombre">
+        <button class="btn primary" type="submit">Enlazar</button>
+        <button class="btn ghost" type="button" id="link-cancel">Cancelar</button>
+      </form>
+      <div class="table-wrap">
+        <table class="sites">
+          <thead>
+            <tr><th>Sitio</th><th>URL</th><th>PHP</th><th>HTTPS</th><th></th></tr>
+          </thead>
+          <tbody id="sites-body"></tbody>
+        </table>
+        <div class="empty hidden" id="sites-empty">
+          <h2>No hay sitios todavía</h2>
+          <p>Crea o clona un proyecto en <code>~/Sites</code>, o usa <strong>Nuevo proyecto</strong>.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- PHP -->
+    <section class="page" id="page-php">
+      <div id="php-list">
+        <header class="page-head">
+          <div>
+            <h1>Versiones de PHP</h1>
+            <p class="muted">Cada sitio puede usar su propia versión. Instalar o actualizar una versión pide tu contraseña.</p>
+          </div>
+          <div class="head-actions">
+            <span class="muted small" id="php-updates-note"></span>
+            <button class="btn" id="php-check-updates">Buscar actualizaciones</button>
+          </div>
+        </header>
+        <div class="cards" id="php-cards"></div>
+      </div>
+
+      <div id="php-detail" class="hidden">
+        <button class="btn ghost back" id="php-back">← Versiones</button>
+        <header class="page-head">
+          <div>
+            <h1 id="pd-title"></h1>
+            <p class="muted" id="pd-sub"></p>
+          </div>
+          <div class="head-actions" id="pd-actions"></div>
+        </header>
+        <div class="detail-grid">
+          <section class="panel">
+            <h2>Ajustes</h2>
+            <p class="muted small">Se guardan en tu <code>cheka.toml</code> y se aplican a todos los sitios con esta versión.</p>
+            <form id="pd-settings">
+              <div id="pd-settings-rows"></div>
+              <div class="add-setting">
+                <input type="text" id="pd-new-key" placeholder="otra directiva (p. ej. session.gc_maxlifetime)" aria-label="Directiva">
+                <input type="text" id="pd-new-value" placeholder="valor" aria-label="Valor">
+              </div>
+              <div class="form-actions"><button class="btn primary" type="submit">Guardar cambios</button></div>
+            </form>
+          </section>
+          <section class="panel">
+            <h2>Extensiones <span class="count" id="pd-ext-count"></span></h2>
+            <p class="muted small" id="pd-ext-note"></p>
+            <input type="search" id="pd-ext-filter" placeholder="Buscar extensión…" aria-label="Buscar extensión">
+            <div class="ext-list" id="pd-ext"></div>
+            <div class="install-ext" id="pd-install"></div>
+          </section>
+        </div>
+        <section class="panel">
+          <details>
+            <summary><h2>Archivos de configuración</h2> <span class="muted small" id="pd-files-summary"></span></summary>
+            <ul class="files" id="pd-files"></ul>
+          </details>
+        </section>
+      </div>
+    </section>
+
+    <!-- Servicios -->
+    <section class="page" id="page-services">
+      <header class="page-head">
+        <div>
+          <h1>Servicios</h1>
+          <p class="muted">Apache, PHP-FPM, MariaDB, DNS y el daemon de cheka.</p>
+        </div>
+        <div class="head-actions">
+          <button class="btn" data-root="start">Iniciar</button>
+          <button class="btn" data-root="stop">Detener</button>
+          <button class="btn primary" data-root="restart">Reiniciar</button>
+        </div>
+      </header>
+      <ul class="service-list" id="service-list"></ul>
+    </section>
+
+    <!-- Nuevo proyecto -->
+    <section class="page" id="page-new">
+      <header class="page-head">
+        <div>
+          <h1>Nuevo proyecto</h1>
+          <p class="muted">Crea el proyecto, su base de datos y lo publica, listo para usar.</p>
+        </div>
+      </header>
+      <form class="new-form" id="new-form">
+        <label>Tipo
+          <select id="new-type">
+            <option value="wordpress">WordPress</option>
+            <option value="laravel">Laravel</option>
+            <option value="codeigniter">CodeIgniter 4</option>
+            <option value="php">PHP sin framework</option>
+          </select>
+        </label>
+        <label>Nombre
+          <input type="text" id="new-name" placeholder="mi-proyecto" required>
+          <small class="muted" id="new-url-preview"></small>
+        </label>
+        <label>PHP
+          <select id="new-php"></select>
+        </label>
+        <label class="wp-only">Multisite
+          <select id="new-multisite">
+            <option value="">No</option>
+            <option value="subdirectorios">Por subdirectorios</option>
+            <option value="subdominios">Por subdominios</option>
+          </select>
+        </label>
+        <label class="wp-only">Idioma
+          <input type="text" id="new-locale" value="es_MX">
+        </label>
+        <label class="check"><input type="checkbox" id="new-secure"> HTTPS</label>
+        <div class="form-actions">
+          <button class="btn primary" type="submit" id="new-submit">Crear proyecto</button>
+        </div>
+      </form>
+      <pre class="console hidden" id="new-console" aria-live="polite"></pre>
+    </section>
+
+    <!-- Logs -->
+    <section class="page" id="page-logs">
+      <header class="page-head">
+        <div>
+          <h1>Logs</h1>
+          <p class="muted">Últimas 200 líneas de Apache y PHP del sitio.</p>
+        </div>
+        <div class="head-actions">
+          <select id="log-site" aria-label="Sitio"></select>
+          <button class="btn" id="log-refresh">Actualizar</button>
+        </div>
+      </header>
+      <div class="logs">
+        <div><h3>Apache</h3><pre class="console" id="log-apache"></pre></div>
+        <div><h3>PHP</h3><pre class="console" id="log-php"></pre></div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,587 @@
+// Panel de cheka. Toda la lógica vive en el binario `cheka`; esto solo la muestra y la
+// invoca. El texto variable se inserta siempre como texto (nunca como HTML).
+
+const { invoke } = window.__TAURI__.core;
+const { listen } = window.__TAURI__.event;
+
+const state = { sites: [], versions: [], status: null, page: "sites", creating: false, error: null };
+
+// ------------------------------------------------------------------ utilidades ----
+
+const $ = (sel) => document.querySelector(sel);
+
+/** Crea un elemento: h("button", { class: "btn", onclick }, "texto", hijo…) */
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (v === false || v == null) continue;
+    if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+    else if (k === "class") el.className = v;
+    else el.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children.flat()) {
+    if (c == null || c === false) continue;
+    el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  }
+  return el;
+}
+
+function toast(message, error = false) {
+  const el = h("div", { class: error ? "toast error" : "toast", role: error ? "alert" : "status" }, message);
+  $("#toasts").append(el);
+  setTimeout(() => el.remove(), error ? 9000 : 4000);
+}
+
+/** Texto útil de la salida de cheka (sin los símbolos ✔ › !). */
+function summary(out) {
+  const text = (out.ok ? out.stdout : out.stderr || out.stdout).trim();
+  return text.replace(/^[✔›!✘] /gm, "") || (out.ok ? "Listo" : "Falló");
+}
+
+/** Deshabilita el botón mientras corre la acción y muestra el resultado. */
+async function action(button, fn) {
+  if (button) button.disabled = true;
+  try {
+    const out = await fn();
+    if (out && "ok" in out) toast(summary(out), !out.ok);
+    await reload();
+  } catch (e) {
+    toast(String(e), true);
+  } finally {
+    if (button) button.disabled = false;
+    // Tras una acción (aunque haya fallado) se redibuja todo: así un interruptor o un
+    // selector vuelve a mostrar el estado real.
+    for (const k in lastRender) delete lastRender[k];
+    render();
+  }
+}
+
+const run = (...args) => invoke("run", { args });
+const runRoot = (...args) => invoke("run_root", { args });
+const installedVersions = () => state.versions.filter((v) => v.installed);
+const defaultVersion = () => state.versions.find((v) => v.default)?.version ?? "";
+
+// ------------------------------------------------------------------ datos ----
+
+/** Ejecuta `fn` solo si `data` cambió desde la última vez para esta `key` (evita
+ *  redibujar cada 4 s, lo que quitaría el foco o anularía un clic en curso). */
+const lastRender = {};
+function changed(key, data) {
+  const sig = JSON.stringify(data);
+  if (lastRender[key] === sig) return false;
+  lastRender[key] = sig;
+  return true;
+}
+
+async function reload() {
+  const [sites, versions, status] = await Promise.allSettled([invoke("sites"), invoke("versions"), invoke("status")]);
+  if (sites.status === "fulfilled") state.sites = sites.value;
+  if (versions.status === "fulfilled") state.versions = versions.value;
+  if (status.status === "fulfilled") state.status = status.value;
+  const failed = [sites, versions, status].find((r) => r.status === "rejected");
+  state.error = failed ? String(failed.reason) : null;
+  render();
+}
+
+/** Si no se pudo leer el estado, decirlo claramente (nunca mostrar listas vacías como si
+ *  todo estuviera bien). */
+function renderBanner() {
+  const banner = $("#banner");
+  banner.classList.toggle("hidden", !state.error);
+  if (!state.error) return;
+  const outdated = /unexpected argument '--json'/.test(state.error);
+  const missing = /No pude ejecutar cheka/.test(state.error);
+  const detail =
+    outdated
+      ? ["El cheka instalado es anterior a este panel. Actualízalo desde el repositorio:\n",
+         h("code", {}, "cargo build --release && sudo ./target/release/cheka install")]
+      : missing
+        ? ["No encuentro cheka instalado. Instálalo con ", h("code", {}, "sudo ./target/release/cheka install")]
+        : [state.error];
+  banner.replaceChildren(h("strong", {}, "No pude leer el estado de cheka. "), ...detail);
+}
+
+function render() {
+  renderBanner();
+  renderHealth();
+  renderSites();
+  renderVersions();
+  renderServices();
+  renderNewForm();
+  renderLogSites();
+}
+
+// ------------------------------------------------------------------ salud ----
+
+function renderHealth() {
+  const st = state.status;
+  const set = (id, ok) => ($(id).className = "dot " + (ok == null ? "" : ok ? "ok" : "bad"));
+  set("#dot-daemon", st?.daemon);
+  set("#dot-dns", st ? Boolean(st.dns) : null);
+  set("#dot-apache", st ? st.services.some((s) => s.name === "apache2" && s.state === "active") : null);
+  $("#sites-count").textContent = state.sites.length || "";
+}
+
+// ------------------------------------------------------------------ sitios ----
+
+const KIND_NAMES = {
+  wordpress: "WordPress",
+  "wp-multisite": "WordPress Multisite",
+  "wp-multisite-subdominios": "WordPress Multisite · subdominios",
+  "wordpress-bedrock": "WordPress (Bedrock)",
+  laravel: "Laravel",
+  codeigniter4: "CodeIgniter 4",
+  codeigniter3: "CodeIgniter 3",
+  php: "PHP",
+  personalizado: "Carpeta pública propia",
+};
+
+function phpSelect(site) {
+  const sel = h("select", { "aria-label": `PHP de ${site.name}` });
+  sel.append(h("option", { value: "" }, `Por defecto (${defaultVersion()})`));
+  for (const v of state.versions) {
+    const label = v.installed ? v.version : `${v.version} (instalar)`;
+    sel.append(h("option", { value: v.version }, label));
+  }
+  sel.value = site.isolated ? site.php : "";
+  sel.addEventListener("change", () =>
+    action(sel, async () => {
+      const v = sel.value;
+      if (!v) return run("unisolate", `--site=${site.name}`);
+      const info = state.versions.find((x) => x.version === v);
+      if (!info.installed) {
+        toast(`Instalando PHP ${v}… (se descarga, puede tardar un poco)`);
+        const inst = await runRoot("php:install", v);
+        if (!inst.ok) return inst;
+      }
+      return run("isolate", v, `--site=${site.name}`);
+    })
+  );
+  return sel;
+}
+
+function httpsSwitch(site) {
+  const input = h("input", { type: "checkbox", "aria-label": `HTTPS de ${site.name}` });
+  input.checked = site.secure;
+  input.addEventListener("change", () =>
+    action(input, () => run(input.checked ? "secure" : "unsecure", site.name))
+  );
+  return h("label", { class: "switch" }, input, h("span"));
+}
+
+function renderSites() {
+  const filter = $("#site-filter").value.trim().toLowerCase();
+  const body = $("#sites-body");
+  const rows = state.sites.filter((s) => !filter || s.name.includes(filter) || s.path.toLowerCase().includes(filter));
+  if (!changed("sites", [rows, state.versions])) return;
+  body.replaceChildren(
+    ...rows.map((s) =>
+      h(
+        "tr",
+        {},
+        h(
+          "td",
+          {},
+          h("div", { class: "site-title" }, h("span", { class: "site-name" }, s.name), h("span", { class: "badge", title: s.kind }, KIND_NAMES[s.kind] ?? s.kind),
+            s.linked && h("span", { class: "badge" }, "enlace"),
+            !s.php_installed && h("span", { class: "badge warn", title: "Usa la versión por defecto" }, `PHP ${s.php} no instalado`)),
+          h("div", { class: "site-path" }, s.path)
+        ),
+        h("td", { class: "url-cell" }, h("a", { class: "link", tabindex: 0, onclick: () => invoke("open_url", { url: s.url }) }, s.url)),
+        h("td", {}, phpSelect(s)),
+        h("td", {}, httpsSwitch(s)),
+        h(
+          "td",
+          {},
+          h("div", { class: "row-actions" },
+            h("button", { class: "btn small", onclick: () => invoke("open_path", { path: s.path }) }, "Carpeta"),
+            h("button", { class: "btn small", onclick: () => showLogs(s.name) }, "Logs"),
+            s.linked && h("button", { class: "btn small danger", onclick: (e) => action(e.currentTarget, () => run("unlink", s.name)) }, "Quitar"))
+        )
+      )
+    )
+  );
+  $("#sites-empty").classList.toggle("hidden", state.sites.length > 0 || Boolean(state.error));
+}
+
+// ------------------------------------------------------------------ PHP ----
+
+const SETTING_HINTS = {
+  memory_limit: "Memoria máxima por petición",
+  upload_max_filesize: "Tamaño máximo de un archivo subido",
+  post_max_size: "Tamaño máximo de un envío (debe ser ≥ la subida)",
+  max_execution_time: "Segundos máximos por petición",
+  max_input_time: "Segundos máximos para recibir datos",
+  max_input_vars: "Campos máximos por formulario",
+  display_errors: "Mostrar errores en la página (On/Off)",
+  error_reporting: "Nivel de errores (p. ej. E_ALL)",
+  "date.timezone": "Zona horaria",
+  "opcache.enable": "Caché de código (On/Off)",
+  short_open_tag: "Permitir <? como etiqueta de apertura",
+};
+
+state.updates = {};
+state.phpDetail = null;
+
+async function checkUpdates(button) {
+  if (button) button.disabled = true;
+  $("#php-updates-note").textContent = "Consultando…";
+  try {
+    const list = await invoke("php_updates");
+    state.updates = Object.fromEntries(list.map((u) => [u.version, u]));
+    const pending = list.filter((u) => u.available).length;
+    $("#php-updates-note").textContent = pending ? `${pending} actualización${pending > 1 ? "es" : ""} disponible${pending > 1 ? "s" : ""}` : "Todo al día";
+  } catch (e) {
+    $("#php-updates-note").textContent = "";
+    toast(`No pude consultar actualizaciones: ${e}`, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+  delete lastRender.versions;
+  renderVersions();
+  if (state.phpDetail) renderPhpDetailHeader();
+}
+
+function updateButton(version) {
+  const u = state.updates[version];
+  if (!u?.available) return null;
+  return h("button", { class: "btn primary", onclick: (e) => action(e.currentTarget, async () => {
+    toast(`Actualizando PHP ${version}… (puede tardar un poco)`);
+    const out = await runRoot("php:update", version);
+    await checkUpdates();
+    if (state.phpDetail === version) await loadPhpDetail();
+    return out;
+  }) }, `Actualizar a ${u.latest}`);
+}
+
+function renderVersions() {
+  if (!changed("versions", [state.versions, state.sites.map((s) => s.php), state.updates])) return;
+  $("#php-cards").replaceChildren(
+    ...state.versions.map((v) => {
+      const used = state.sites.filter((s) => s.php === v.version).length;
+      const u = state.updates[v.version];
+      const buttons = [];
+      if (!v.installed) {
+        buttons.push(h("button", { class: "btn", onclick: (e) => action(e.currentTarget, () => runRoot("php:install", v.version)) }, "Instalar"));
+      } else {
+        buttons.push(h("button", { class: "btn", onclick: () => openPhpDetail(v.version) }, "Detalles"));
+        if (!v.default) buttons.push(h("button", { class: "btn", onclick: (e) => action(e.currentTarget, () => run("use", v.version)) }, "Usar por defecto"));
+        const up = updateButton(v.version);
+        if (up) buttons.push(up);
+      }
+      return h(
+        "div",
+        { class: v.default ? "card default" : "card" },
+        h("div", { class: "version" }, `PHP ${v.version}`),
+        h("div", { class: "meta" },
+          v.installed ? `${u?.current ? u.current.split("-")[0] + " · " : ""}${v.source === "apt" ? "paquete del sistema" : "binario estático"}` : "No instalada",
+          v.default ? " · por defecto" : "",
+          used ? ` · ${used} sitio${used > 1 ? "s" : ""}` : ""),
+        u?.available && h("div", {}, h("span", { class: "badge update" }, `Nueva versión: ${u.latest.split("-")[0]}`)),
+        h("div", { class: "actions" }, buttons)
+      );
+    })
+  );
+}
+
+$("#php-check-updates").addEventListener("click", (e) => checkUpdates(e.currentTarget));
+
+// ---------- detalle de una versión ----------
+
+function openPhpDetail(version) {
+  state.phpDetail = version;
+  state.phpInfo = null;
+  $("#php-list").classList.add("hidden");
+  $("#php-detail").classList.remove("hidden");
+  $("#pd-title").textContent = `PHP ${version}`;
+  $("#pd-sub").textContent = "Cargando…";
+  for (const id of ["#pd-settings-rows", "#pd-ext", "#pd-install", "#pd-files"]) $(id).replaceChildren();
+  loadPhpDetail();
+}
+
+function closePhpDetail() {
+  state.phpDetail = null;
+  $("#php-detail").classList.add("hidden");
+  $("#php-list").classList.remove("hidden");
+}
+$("#php-back").addEventListener("click", closePhpDetail);
+
+async function loadPhpDetail() {
+  const version = state.phpDetail;
+  if (!version) return;
+  try {
+    const info = await invoke("php_info", { version });
+    if (state.phpDetail !== version) return; // el usuario ya cambió de vista
+    state.phpInfo = info;
+    renderPhpDetail();
+  } catch (e) {
+    $("#pd-sub").textContent = "";
+    toast(String(e), true);
+  }
+}
+
+/** Acción dentro del detalle: al terminar recarga el detalle (y los datos generales). */
+function detailAction(button, fn) {
+  return action(button, async () => {
+    const out = await fn();
+    await loadPhpDetail();
+    return out;
+  });
+}
+
+function renderPhpDetailHeader() {
+  const info = state.phpInfo;
+  if (!info) return;
+  $("#pd-title").textContent = `PHP ${info.full_version}`;
+  $("#pd-sub").textContent = info.source === "apt" ? "Paquete del sistema (apt)" : "Binario estático de cheka";
+  $("#pd-actions").replaceChildren(...[updateButton(info.version)].filter(Boolean));
+}
+
+function renderPhpDetail() {
+  const info = state.phpInfo;
+  renderPhpDetailHeader();
+
+  // Ajustes
+  $("#pd-settings-rows").replaceChildren(
+    ...info.settings.map((s) => {
+      const input = h("input", { type: "text", value: s.value === "(sin definir)" ? "" : s.value, placeholder: "(sin definir)", "data-key": s.key, "data-orig": s.value === "(sin definir)" ? "" : s.value, "aria-label": s.key });
+      input.addEventListener("input", () => input.classList.toggle("dirty", input.value !== input.dataset.orig));
+      return h("div", { class: "setting-row" },
+        h("span", { class: "key" }, s.key, s.custom && h("span", { class: "badge", title: "Cambiado en cheka.toml" }, " propio")),
+        input,
+        s.custom
+          ? h("button", { class: "btn small ghost", type: "button", title: "Volver al valor de cheka", onclick: (e) => detailAction(e.currentTarget, () => run("php:ini", info.version, `${s.key}=`)) }, "Restablecer")
+          : h("span"),
+        SETTING_HINTS[s.key] && h("span", { class: "hint" }, SETTING_HINTS[s.key]));
+    })
+  );
+
+  // Extensiones
+  renderPhpExtensions();
+  $("#pd-ext-note").textContent = info.can_manage_extensions
+    ? "Activar o desactivar una extensión solo afecta a cheka; el PHP del sistema no cambia."
+    : "Binario estático: sus extensiones vienen compiladas y no se pueden cambiar. Para gestionarlas, usa una versión instalada con apt.";
+  $("#pd-install").classList.toggle("hidden", !info.can_manage_extensions || !info.installable.length);
+  if (info.can_manage_extensions && info.installable.length) {
+    const sel = h("select", { "aria-label": "Extensión para instalar" }, ...info.installable.map((p) => h("option", { value: p }, `php${info.version}-${p}`)));
+    $("#pd-install").replaceChildren(sel, h("button", { class: "btn", onclick: (e) => detailAction(e.currentTarget, () => runRoot("php:ext", info.version, "install", sel.value)) }, "Instalar extensión"));
+  }
+
+  // Archivos
+  $("#pd-files").replaceChildren(...[info.ini_file, ...info.ini_files].filter(Boolean).map((f) => h("li", {}, f)));
+  $("#pd-files-summary").textContent = `php.ini + ${info.ini_files.length} archivo${info.ini_files.length === 1 ? "" : "s"} adicional${info.ini_files.length === 1 ? "" : "es"}`;
+}
+
+function renderPhpExtensions() {
+  const info = state.phpInfo;
+  if (!info) return;
+  const filter = $("#pd-ext-filter").value.trim().toLowerCase();
+  const exts = info.extensions.filter((e) => !filter || e.name.includes(filter));
+  $("#pd-ext-count").textContent = `${info.extensions.filter((e) => e.enabled).length} activas`;
+  if (!info.can_manage_extensions) {
+    $("#pd-ext").replaceChildren(h("div", { class: "chips" }, ...exts.map((e) => h("span", { class: "badge" }, e.name))));
+    return;
+  }
+  $("#pd-ext").replaceChildren(
+    ...exts.map((e) => {
+      const input = h("input", { type: "checkbox", "aria-label": `Extensión ${e.name}` });
+      input.checked = e.enabled;
+      input.addEventListener("change", () =>
+        detailAction(input, () => run("php:ext", info.version, input.checked ? "enable" : "disable", e.name)));
+      return h("div", { class: e.enabled ? "ext" : "ext off" },
+        h("span", {}, e.name, e.enabled !== e.loaded && h("span", { class: "pending", title: "Se aplica en unos segundos, al reiniciar ese PHP" }, " · aplicando…")),
+        h("label", { class: "switch" }, input, h("span")));
+    })
+  );
+}
+$("#pd-ext-filter").addEventListener("input", renderPhpExtensions);
+
+$("#pd-settings").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const info = state.phpInfo;
+  const pairs = [...document.querySelectorAll("#pd-settings-rows input")]
+    .filter((i) => i.value.trim() !== i.dataset.orig)
+    .map((i) => `${i.dataset.key}=${i.value.trim()}`);
+  const key = $("#pd-new-key").value.trim();
+  if (key) pairs.push(`${key}=${$("#pd-new-value").value.trim()}`);
+  if (!pairs.length) return toast("No hay cambios que guardar");
+  detailAction(e.submitter, async () => {
+    const out = await run("php:ini", info.version, ...pairs);
+    if (out.ok) {
+      $("#pd-new-key").value = "";
+      $("#pd-new-value").value = "";
+    }
+    return out;
+  });
+});
+
+// ------------------------------------------------------------------ servicios ----
+
+const SERVICE_NAMES = {
+  apache2: "Apache",
+  cheka: "Daemon de cheka",
+  "cheka-dns": "DNS (*.test)",
+  mariadb: "MariaDB",
+};
+
+const STATE_NAMES = { active: "activo", inactive: "detenido", failed: "con error", activating: "iniciando", deactivating: "deteniéndose" };
+
+function renderServices() {
+  const st = state.status;
+  if (!st || !changed("services", st)) return;
+  $("#service-list").replaceChildren(
+    ...st.services.map((s) => {
+      const php = s.name.match(/^cheka-php@(.+)\.service$/);
+      const label = php ? `PHP-FPM ${php[1]}` : SERVICE_NAMES[s.name] ?? s.name;
+      return h("li", {}, h("span", { class: "dot " + (s.state === "active" ? "ok" : "bad") }), label, h("span", { class: "state" }, STATE_NAMES[s.state] ?? s.state));
+    }),
+    h("li", {}, h("span", { class: "dot " + (st.dns ? "ok" : "bad") }), "Resolución de *.test", h("span", { class: "state" }, st.dns ? `→ ${st.dns}` : "no resuelve"))
+  );
+}
+
+for (const btn of document.querySelectorAll("[data-root]")) {
+  btn.addEventListener("click", () => action(btn, () => runRoot(btn.dataset.root)));
+}
+
+// ------------------------------------------------------------------ nuevo proyecto ----
+
+function renderNewForm() {
+  const sel = $("#new-php");
+  if (sel.options.length && sel.dataset.sig === JSON.stringify(installedVersions())) return;
+  const current = sel.value;
+  sel.replaceChildren(h("option", { value: "" }, `Por defecto (${defaultVersion()})`), ...installedVersions().map((v) => h("option", { value: v.version }, v.version)));
+  sel.value = current;
+  sel.dataset.sig = JSON.stringify(installedVersions());
+}
+
+function updateNewFormVisibility() {
+  const wp = $("#new-type").value === "wordpress";
+  for (const el of document.querySelectorAll(".wp-only")) el.classList.toggle("hidden", !wp);
+  const name = $("#new-name").value.trim().toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  $("#new-url-preview").textContent = name ? `${$("#new-secure").checked ? "https" : "http"}://${name}.test` : "";
+}
+["#new-type", "#new-name", "#new-secure"].forEach((id) => $(id).addEventListener("input", updateNewFormVisibility));
+
+$("#new-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (state.creating) return;
+  const type = $("#new-type").value;
+  const args = [type, $("#new-name").value.trim()];
+  if ($("#new-php").value) args.push(`--php=${$("#new-php").value}`);
+  if ($("#new-secure").checked) args.push("--secure");
+  if (type === "wordpress") {
+    if ($("#new-multisite").value) args.push(`--multisite=${$("#new-multisite").value}`);
+    if ($("#new-locale").value.trim()) args.push(`--locale=${$("#new-locale").value.trim()}`);
+  }
+  const consoleEl = $("#new-console");
+  consoleEl.replaceChildren();
+  consoleEl.classList.remove("hidden");
+  state.creating = true;
+  $("#new-submit").disabled = true;
+  $("#new-submit").textContent = "Creando…";
+  try {
+    await invoke("new_project", { args });
+  } catch (err) {
+    finishNew(false, String(err));
+  }
+});
+
+function finishNew(ok, message) {
+  state.creating = false;
+  $("#new-submit").disabled = false;
+  $("#new-submit").textContent = "Crear proyecto";
+  toast(message ?? (ok ? "Proyecto creado" : "La creación falló; revisa la salida"), !ok);
+  reload();
+}
+
+listen("new-output", ({ payload }) => {
+  const consoleEl = $("#new-console");
+  consoleEl.append(h("span", { class: payload.error ? "err" : "" }, payload.line + "\n"));
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+});
+listen("new-done", ({ payload }) => finishNew(payload));
+listen("services-restarted", ({ payload }) => {
+  toast(payload ? "Servicios reiniciados" : "No se reiniciaron los servicios", !payload);
+  reload();
+});
+
+// ------------------------------------------------------------------ logs ----
+
+function renderLogSites() {
+  const sel = $("#log-site");
+  const names = state.sites.map((s) => s.name);
+  if (sel.dataset.sig === names.join(",")) return;
+  const current = sel.value;
+  sel.replaceChildren(...names.map((n) => h("option", { value: n }, n)));
+  if (names.includes(current)) sel.value = current;
+  sel.dataset.sig = names.join(",");
+}
+
+async function loadLogs() {
+  const site = state.sites.find((s) => s.name === $("#log-site").value);
+  for (const id of ["#log-apache", "#log-php"]) $(id).textContent = site ? "" : "Elige un sitio.";
+  if (!site) return;
+  try {
+    const logs = await invoke("read_log", { site: site.name, php: site.php });
+    for (const [id, log] of [["#log-apache", logs.apache], ["#log-php", logs.php]]) {
+      $(id).textContent = log.lines.length ? log.lines.join("\n") : `(vacío) ${log.file}`;
+      $(id).scrollTop = $(id).scrollHeight;
+    }
+  } catch (e) {
+    toast(String(e), true);
+  }
+}
+
+function showLogs(name) {
+  showPage("logs");
+  $("#log-site").value = name;
+  loadLogs();
+}
+
+$("#log-site").addEventListener("change", loadLogs);
+$("#log-refresh").addEventListener("click", loadLogs);
+
+// ------------------------------------------------------------------ enlazar carpeta ----
+
+$("#btn-link").addEventListener("click", () => {
+  $("#link-form").classList.remove("hidden");
+  $("#link-path").focus();
+});
+$("#link-cancel").addEventListener("click", () => $("#link-form").classList.add("hidden"));
+$("#link-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const btn = e.submitter;
+  action(btn, async () => {
+    const out = await invoke("link_folder", { path: $("#link-path").value.trim(), name: $("#link-name").value });
+    if (out.ok) {
+      $("#link-form").reset();
+      $("#link-form").classList.add("hidden");
+    }
+    return out;
+  });
+});
+
+// ------------------------------------------------------------------ navegación ----
+
+function showPage(page) {
+  state.page = page;
+  for (const el of document.querySelectorAll(".nav-item")) el.classList.toggle("active", el.dataset.page === page);
+  for (const el of document.querySelectorAll(".page")) el.classList.toggle("active", el.id === `page-${page}`);
+  if (page === "logs") loadLogs();
+  if (page === "php") {
+    if (state.phpDetail) loadPhpDetail();
+    if (!Object.keys(state.updates).length) checkUpdates();
+  }
+}
+
+for (const el of document.querySelectorAll(".nav-item")) el.addEventListener("click", () => showPage(el.dataset.page));
+$("#site-filter").addEventListener("input", renderSites);
+
+// Mantener los datos al día mientras la ventana está visible (el daemon publica solo).
+setInterval(() => {
+  if (document.visibilityState === "visible" && !state.creating) reload();
+}, 4000);
+window.addEventListener("focus", reload);
+
+updateNewFormVisibility();
+reload();

@@ -521,12 +521,22 @@ password = "secret"
 3. **Windows.** `platform/windows.rs`: Apache Lounge + `mod_fcgid` + PHP NTS de
    `releases.json`, servicio de Windows, named pipe y DNS (primero el archivo `hosts`, luego
    NRPT + DNS integrado).
-4. **UI de bandeja (estilo PHP Monitor).** App en [Tauri](https://tauri.app) que es otro
-   cliente del daemon, igual que la CLI. Gestiona sitios (abrir, HTTPS, versión de PHP,
-   carpeta pública), versiones de PHP, extensiones, servicios, bases de datos, logs y el
-   asistente de `new`. Requiere el IPC del hito 1.3; el núcleo ya es una biblioteca (`src/lib.rs`)
-   para poder reutilizarlo. **Pendiente de decidir:** cómo gestionar extensiones con los PHP
-   estáticos de Linux, que no cargan `.so` (otro origen de PHP o compilar con static-php-cli).
+4. **UI de bandeja (estilo PHP Monitor)** — en curso, crate `ui/` (`cheka-ui`, Tauri v2,
+   interfaz en HTML/CSS/JS sin frameworks). Ventana con sitios (abrir, HTTPS, versión de PHP,
+   carpeta, logs, enlazar carpetas), versiones de PHP, servicios, asistente de `new` con la
+   salida en vivo y logs; bandeja con acceso a cada sitio y a reiniciar servicios.
+   **Decisión:** la UI corre como el usuario y usa el binario `cheka` instalado como motor
+   (`sites/versions/status --json` para leer y los mismos comandos de la CLI para modificar),
+   en vez de hablar solo con el daemon como se planeó. Motivo: el daemon corre como root y no
+   debe ejecutar acciones del usuario (Composer, WP-CLI); así la UI se comporta exactamente
+   igual que la terminal y no duplica lógica. Las acciones de root usan `pkexec`. Los
+   comandos permitidos están en listas blancas en `ui/src/main.rs`.
+   **Ajustes y extensiones por versión** (`php:info/ini/ext/update`, sección PHP de la UI):
+   se guardan en `cheka.toml` y el daemon los aplica (`99-cheka.ini`, y para el PHP de apt
+   una carpeta de extensiones propia, `ext.d`, que refleja al sistema más los cambios del
+   usuario). **Decidido:** las extensiones solo se gestionan en el PHP de apt; en los
+   binarios estáticos se muestran pero no se pueden cambiar. Si hace falta en esas versiones,
+   la alternativa sería compilarlas con static-php-cli.
 5. **Extras.** DNS integrado en todas las plataformas (deja de depender de dnsmasq), PHP 7.4
    donde exista (Windows y macOS vía Homebrew), `cheka share` (túnel) y quizá un icono en la
    bandeja.
