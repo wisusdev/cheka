@@ -6,6 +6,7 @@ use std::path::PathBuf;
 pub const TLD: &str = "test";
 pub const DB_USER: &str = "cheka";
 pub const DB_PASS: &str = "secret";
+pub const DNS_PORT: u16 = 5300;
 
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -18,6 +19,10 @@ pub struct Layout {
     pub log_dir: PathBuf,
     pub run_dir: PathBuf,
     pub units: PathBuf,
+    pub resolved_dropin: PathBuf,
+    pub apache_conf: PathBuf,
+    pub apache_site_conf: PathBuf,
+    pub apache_envvars: PathBuf,
 }
 
 impl Layout {
@@ -38,8 +43,17 @@ impl Layout {
             log_dir: p("/var/log/cheka"),
             run_dir: p("/run/cheka"),
             units: p("/etc/systemd/system"),
+            resolved_dropin: p("/etc/systemd/resolved.conf.d/cheka.conf"),
+            apache_conf: p("/etc/apache2/conf-available/cheka.conf"),
+            apache_site_conf: p("/etc/apache2/sites-available/cheka.conf"),
+            apache_envvars: p("/etc/apache2/envvars"),
             prefix,
         }
+    }
+
+    /// Socket del daemon (API para la CLI y la futura UI).
+    pub fn socket(&self) -> PathBuf {
+        self.run_dir.join("cheka.sock")
     }
 
     /// Modo prueba: sin servicios, sin `apache2ctl`, sin sudo.

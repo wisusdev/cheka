@@ -1,0 +1,11 @@
+# Generado por cheka
+IncludeOptional {{ apache_sites }}/*.conf
+
+# Cualquier otro *.{{ tld }}: aviso claro en vez de mostrar otro proyecto.
+<VirtualHost *:80>
+    ServerName no-encontrado.{{ tld }}
+    ServerAlias *.{{ tld }}
+    RewriteEngine On
+    RewriteRule ^ - [R=404,L]
+    ErrorDocument 404 "cheka: no hay un sitio para este dominio. Revisa: cheka sites"
+</VirtualHost>

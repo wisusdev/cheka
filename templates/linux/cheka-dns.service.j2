@@ -1,0 +1,12 @@
+# Generado por cheka
+[Unit]
+Description=cheka DNS (*.{{ tld }} → 127.0.0.1)
+After=network.target
+
+[Service]
+ExecStart=/usr/sbin/dnsmasq --keep-in-foreground --conf-file=/dev/null --no-resolv --no-hosts --no-poll --bind-interfaces --listen-address=127.0.0.1 --port={{ dns_port }} --address=/{{ tld }}/127.0.0.1 --user=nobody --group=nogroup --pid-file=/run/cheka-dns/dnsmasq.pid
+RuntimeDirectory=cheka-dns
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

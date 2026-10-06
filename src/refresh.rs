@@ -11,14 +11,14 @@ use crate::Ctx;
 use crate::detect::detect;
 use crate::render::{self, Vhost};
 use crate::util::{conf_files, copy_files, dirs_equal, mkdir, write, write_mode};
-use crate::{php, sites, ui};
+use crate::{ipc, php, sites, ui};
 
 /// Resultado visible para quien pidió el refresh sin sudo (lo lee `request_refresh`).
 fn record(ctx: &Ctx, msg: &str) -> Result<()> {
     write_mode(&ctx.layout.run_dir.join("last-refresh"), &format!("{msg}\n"), 0o644)
 }
 
-pub fn run(ctx: &Ctx) -> Result<()> {
+pub fn run(ctx: &Ctx) -> Result<String> {
     let l = &ctx.layout;
     mkdir(&l.apache_sites)?;
     mkdir(&l.run_dir)?;
@@ -74,8 +74,8 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     if dirs_equal(staging.path(), &l.apache_sites) {
         let msg = format!("Sin cambios ({count} sitios)");
         record(ctx, &msg)?;
-        ui::ok(msg);
-        return Ok(());
+        ui::ok(&msg);
+        return Ok(msg);
     }
 
     let backup = tempfile::tempdir()?;
@@ -93,17 +93,26 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     }
     let msg = format!("Apache actualizado ({count} sitios)");
     record(ctx, &msg)?;
-    ui::ok(msg);
-    Ok(())
+    ui::ok(&msg);
+    Ok(msg)
 }
 
-/// Pide un refresh después de modificar el estado. Como root (o en modo prueba) lo hace
-/// directamente; si no, se lo pide al servicio `cheka-watch` sin sudo y espera su
-/// resultado; si el servicio no responde, recurre a sudo (docs/ARQUITECTURA.md §3.2).
+/// Pide un refresh después de modificar el estado, en este orden:
+/// 1. al daemon por el socket (sin sudo),
+/// 2. directamente, si somos root o estamos en modo prueba,
+/// 3. al vigilante de la versión en bash (`cheka-watch.path`), mientras conviven,
+/// 4. con sudo.
 pub fn request(ctx: &mut Ctx) -> Result<()> {
     ctx.reload_state()?;
+    if let Ok(resp) = ipc::call(&ctx.layout.socket(), &ipc::Request::Refresh) {
+        if !resp.ok {
+            bail!("{}", resp.message);
+        }
+        ui::ok(resp.message);
+        return Ok(());
+    }
     if ctx.is_root() {
-        return run(ctx);
+        return run(ctx).map(drop);
     }
     if ctx.sys.is_active("cheka-watch.path") {
         let req = ctx.state.refresh_request();
@@ -139,8 +148,12 @@ fn replace_confs(dir: &std::path::Path, from: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// Regenera `cheka-watch.path` si cambiaron las carpetas aparcadas.
+/// Regenera `cheka-watch.path` (el vigilante de la versión en bash) si cambiaron las
+/// carpetas aparcadas. Con el daemon instalado (`cheka.service`) ya no hace falta.
 fn write_watch_unit(ctx: &Ctx) -> Result<()> {
+    if ctx.layout.units.join("cheka.service").exists() {
+        return Ok(());
+    }
     let f = ctx.layout.units.join("cheka-watch.path");
     let new = render::watch_unit(&ctx.state.paths, &ctx.state.refresh_request());
     if fs::read_to_string(&f).is_ok_and(|old| old == new) {

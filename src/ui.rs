@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static QUIET: AtomicBool = AtomicBool::new(false);
+static SILENT_WARNINGS: AtomicBool = AtomicBool::new(false);
 
 pub struct Colors {
     pub bold: &'static str,
@@ -56,7 +57,15 @@ pub fn ok(msg: impl AsRef<str>) {
     }
 }
 
+/// Silencia también las advertencias (lo usa el refresh periódico del daemon).
+pub fn set_silent_warnings(silent: bool) {
+    SILENT_WARNINGS.store(silent, Ordering::Relaxed);
+}
+
 pub fn warn(msg: impl AsRef<str>) {
+    if SILENT_WARNINGS.load(Ordering::Relaxed) {
+        return;
+    }
     let c = colors();
     eprintln!("{}!{} {}", c.yellow, c.reset, msg.as_ref());
 }

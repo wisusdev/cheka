@@ -25,11 +25,32 @@ fn env() -> &'static Environment<'static> {
             ("linux/php-fpm.conf.j2", include_str!("../templates/linux/php-fpm.conf.j2")),
             ("linux/php.ini.j2", include_str!("../templates/linux/php.ini.j2")),
             ("linux/php-cli.sh.j2", include_str!("../templates/linux/php-cli.sh.j2")),
+            ("linux/cheka-php@.service.j2", include_str!("../templates/linux/cheka-php@.service.j2")),
+            ("linux/cheka-dns.service.j2", include_str!("../templates/linux/cheka-dns.service.j2")),
+            ("linux/cheka.service.j2", include_str!("../templates/linux/cheka.service.j2")),
+            ("linux/resolved.conf.j2", include_str!("../templates/linux/resolved.conf.j2")),
+            ("linux/apache-conf.conf.j2", include_str!("../templates/linux/apache-conf.conf.j2")),
+            ("linux/apache-site.conf.j2", include_str!("../templates/linux/apache-site.conf.j2")),
+            ("linux/envvars-block.j2", include_str!("../templates/linux/envvars-block.j2")),
         ] {
             env.add_template(name, src).expect("plantilla inválida");
         }
         env
     })
+}
+
+/// Archivos de sistema que genera `install` (unidades, DNS, Apache).
+pub fn system_file(layout: &Layout, template: &str, user: &str, group: &str) -> String {
+    render(
+        &format!("linux/{template}.j2"),
+        context! {
+            bin => layout.bin.display().to_string(),
+            apache_sites => layout.apache_sites.display().to_string(),
+            tld => TLD,
+            dns_port => crate::layout::DNS_PORT,
+            user, group,
+        },
+    )
 }
 
 fn render(name: &str, ctx: minijinja::Value) -> String {

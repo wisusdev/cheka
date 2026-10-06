@@ -273,6 +273,11 @@ Cada punto costó al menos un fallo durante el desarrollo.
     sistema, así que `.test` no resuelve.
 12. **Laravel nuevo usa SQLite por defecto:** hay que cambiar el `.env` y borrar
     `database/database.sqlite` antes de migrar.
+13. **Una unidad `.path` de systemd no aguanta ráfagas.** Cada cambio en `~/Sites` arranca
+    `cheka-refresh.service`, y systemd limita los arranques por intervalo (`StartLimitBurst`).
+    Con `composer create-project` y varias peticiones seguidas de la CLI se supera el límite
+    y `cheka-watch.path` queda en `failed (unit-start-limit-hit)`, sin avisar a nadie. El daemon
+    en Rust lo evita agrupando eventos (*debounce*) y sin arrancar un servicio por evento.
 
 ---
 
@@ -494,8 +499,13 @@ password = "secret"
      una secuencia de 42 pasos (estado y archivos finales idénticos) y `db` contra el
      MariaDB real. `new` (WordPress Multisite + HTTPS, Laravel, CodeIgniter) se probó en el
      sistema real usando el vigilante instalado, sin sudo.
-   - **1.3** `install`/`uninstall` y el daemon (IPC por socket, vigilancia y temporizador), que
-     reemplaza a `cheka-watch.path`, `cheka-refresh.timer` y `.refresh-request`.
+   - **1.3 ✅** `install`/`uninstall` y el daemon `cheka.service` (`cheka daemon`): API por
+     socket Unix en `/run/cheka/cheka.sock` (JSON por línea; autoriza con `SO_PEERCRED` solo a
+     root y al dueño de los proyectos), vigilancia con `notify` + *debounce* y refresh cada
+     minuto. Reemplaza a `cheka-watch.path`, `cheka-refresh.timer` y `.refresh-request`, que
+     `install` retira. `install`/`uninstall` funcionan en modo prefijo para probarlos sin root;
+     `tests/daemon_install.rs` compara las unidades contra el `write_units` de bash y prueba el
+     daemon en vivo (API, carpetas nuevas, rutas aparcadas después de arrancar).
    - **1.4** `cheka-rs` reemplaza al script en el sistema y migra el estado a `cheka.toml`.
 2. **macOS.** `platform/macos.rs`: Homebrew `httpd` + launchd + `/etc/resolver/test` +
    static-php-cli para macOS. Reutiliza casi todo de Linux.

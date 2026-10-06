@@ -5,14 +5,11 @@ use clap::{ArgAction, Parser, Subcommand};
 
 use cheka::{Ctx, commands, ui};
 
-/// Comandos de la versión en bash que todavía no se portaron.
-const PENDING: &[&str] = &["install", "uninstall"];
-
 #[derive(Parser)]
 #[command(
     name = "cheka",
     version,
-    about = "Entorno local PHP al estilo de Laravel Valet (port en Rust, fase 1)",
+    about = "Entorno local PHP al estilo de Laravel Valet",
     disable_version_flag = true,
     disable_help_subcommand = true
 )]
@@ -110,6 +107,15 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<OsString>,
     },
+    /// Configura todo el sistema (pide sudo). Idempotente
+    Install,
+    /// Revierte la configuración del sistema
+    Uninstall {
+        #[arg(allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Daemon: vigila los sitios y atiende a la CLI (lo arranca systemd)
+    Daemon,
     /// Inicia los servicios
     Start,
     /// Detiene los servicios
@@ -153,14 +159,14 @@ fn run(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Db { args } => db::db(ctx, &args),
         Cmd::New { args } => new::new(ctx, &args),
         Cmd::Wp { args } => commands::wp(ctx, args),
+        Cmd::Install => cheka::install::install(ctx),
+        Cmd::Uninstall { args } => cheka::install::uninstall(ctx, &args),
+        Cmd::Daemon => cheka::daemon::run(ctx),
         Cmd::Start => commands::services(ctx, "start"),
         Cmd::Stop => commands::services(ctx, "stop"),
         Cmd::Restart => commands::services(ctx, "restart"),
         Cmd::Other(args) => {
             let name = args.first().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
-            if PENDING.contains(&name.as_str()) {
-                anyhow::bail!("'{name}' todavía no está portado a Rust; usa la versión en bash: ~/cheka/cheka {name}")
-            }
             anyhow::bail!("Comando desconocido: {name} (usa: cheka --help)")
         }
     }

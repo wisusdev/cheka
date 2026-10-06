@@ -1,0 +1,11 @@
+# Generado por cheka
+[Unit]
+Description=cheka: vigila los sitios y atiende a la CLI
+After=network.target apache2.service
+
+[Service]
+ExecStart={{ bin }}/cheka daemon
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

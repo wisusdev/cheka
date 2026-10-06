@@ -1,0 +1,14 @@
+# Generado por cheka
+[Unit]
+Description=cheka PHP-FPM %i
+After=network.target
+
+[Service]
+ExecStart={{ bin }}/cheka _fpm %i
+ExecReload=/bin/kill -USR2 $MAINPID
+RuntimeDirectory=cheka/php-%i
+RuntimeDirectoryMode=0755
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

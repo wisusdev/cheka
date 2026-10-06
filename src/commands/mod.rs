@@ -20,7 +20,7 @@ use crate::{Ctx, php, refresh, render, sites, ui};
 pub fn refresh(ctx: &Ctx, quiet: bool) -> Result<()> {
     ui::set_quiet(quiet);
     ctx.ensure_root()?;
-    refresh::run(ctx)
+    refresh::run(ctx).map(drop)
 }
 
 pub fn sites(ctx: &Ctx) -> Result<()> {
@@ -97,7 +97,7 @@ pub fn composer(ctx: &Ctx, args: Vec<OsString>) -> Result<()> {
     Err(anyhow!("No pude ejecutar composer: {}", Command::new(&bin).arg(composer).args(args).exec()))
 }
 
-fn php_units() -> Vec<String> {
+pub fn php_units() -> Vec<String> {
     Command::new("systemctl")
         .args(["list-units", "--all", "--plain", "--no-legend", "cheka-php@*.service"])
         .stderr(Stdio::null())
@@ -118,8 +118,13 @@ fn resolve_host(host: &str) -> Option<std::net::IpAddr> {
 
 pub fn status(ctx: &Ctx) -> Result<()> {
     let c = ui::colors();
-    let mut units: Vec<String> =
-        ["apache2", "cheka-dns", "mariadb", "cheka-watch.path", "cheka-refresh.timer"].map(String::from).into();
+    let mut units: Vec<String> = ["apache2", "cheka", "cheka-dns", "mariadb"].map(String::from).into();
+    // Mientras convivan las versiones: el vigilante de bash, solo si sigue instalado.
+    for legacy in ["cheka-watch.path", "cheka-refresh.timer"] {
+        if ctx.layout.units.join(legacy).exists() {
+            units.push(legacy.to_string());
+        }
+    }
     units.extend(php_units());
     for u in units {
         let out = Command::new("systemctl").args(["is-active", &u]).stderr(Stdio::null()).output()?;
@@ -134,6 +139,10 @@ pub fn status(ctx: &Ctx) -> Result<()> {
     match resolve_host(&probe) {
         Some(ip) => println!("{}●{} DNS: *.{TLD} → {ip}", c.green, c.reset),
         None => println!("{}●{} DNS: *.{TLD} no resuelve", c.red, c.reset),
+    }
+    match crate::ipc::call(&ctx.layout.socket(), &crate::ipc::Request::Ping) {
+        Ok(r) if r.ok => println!("{}●{} API del daemon ({})", c.green, c.reset, ctx.layout.socket().display()),
+        _ => println!("{}●{} API del daemon: no responde", c.red, c.reset),
     }
     println!("PHP por defecto: {}", ctx.state.default_php());
     Ok(())

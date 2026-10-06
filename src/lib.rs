@@ -2,8 +2,11 @@
 //! que el futuro daemon y la UI de bandeja reutilicen la misma lógica.
 
 pub mod commands;
+pub mod daemon;
 pub mod detect;
 pub mod identity;
+pub mod install;
+pub mod ipc;
 pub mod layout;
 pub mod php;
 pub mod refresh;
