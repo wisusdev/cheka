@@ -1,0 +1,19 @@
+; Generado por cheka — no editar (se sobrescribe). Ajustes propios en conf.d/*.ini
+memory_limit = 512M
+upload_max_filesize = 256M
+post_max_size = 256M
+max_execution_time = 300
+max_input_time = 300
+max_input_vars = 5000
+display_errors = On
+display_startup_errors = On
+error_reporting = E_ALL
+log_errors = On
+date.timezone = {{ tz }}
+curl.cainfo = /etc/ssl/certs/ca-certificates.crt
+openssl.cafile = /etc/ssl/certs/ca-certificates.crt
+mysqli.default_socket = /run/mysqld/mysqld.sock
+pdo_mysql.default_socket = /run/mysqld/mysqld.sock
+opcache.enable = 1
+opcache.validate_timestamps = 1
+opcache.revalidate_freq = 0

@@ -1,0 +1,11 @@
+# Generado por cheka
+[Unit]
+Description=cheka: vigila las carpetas aparcadas
+[Path]
+{% for p in paths %}
+PathChanged={{ p }}
+{% endfor %}
+PathChanged={{ request }}
+Unit=cheka-refresh.service
+[Install]
+WantedBy=multi-user.target

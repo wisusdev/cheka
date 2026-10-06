@@ -482,13 +482,29 @@ password = "secret"
 1. **Paridad en Linux.** Reimplementar el comportamiento actual en Rust, leyendo el estado de
    la versión en bash y migrándolo. Usar *golden tests*: comparar los vhosts, pools e inis
    generados con los de la versión en bash. Mantener un modo "prefijo" (raíz falsa, sin
-   servicios) como `CHEKA_PREFIX`, para probar sin root en CI.
+   servicios) como `CHEKA_PREFIX`, para probar sin root en CI. Hitos:
+   - **1.1 ✅** Núcleo (rutas, estado en el formato de bash, sitios, detección, plantillas
+     minijinja, `refresh`) y comandos de lectura (`sites`, `paths`, `versions`, `which-php`,
+     `php`, `composer`, `status`, `migrate`), más `php:install` sin descarga. El binario se
+     llama `cheka-rs` mientras convive con el script. `tests/parity.rs` compara byte a byte
+     contra el script de bash.
+   - **1.2** Comandos que modifican el estado (`park`, `link`, `isolate`, `use`, `docroot`,
+     `secure`, `db`, `wp`, `new`) y la descarga de binarios de PHP.
+   - **1.3** `install`/`uninstall` y el daemon (IPC por socket, vigilancia y temporizador), que
+     reemplaza a `cheka-watch.path`, `cheka-refresh.timer` y `.refresh-request`.
+   - **1.4** `cheka-rs` reemplaza al script en el sistema y migra el estado a `cheka.toml`.
 2. **macOS.** `platform/macos.rs`: Homebrew `httpd` + launchd + `/etc/resolver/test` +
    static-php-cli para macOS. Reutiliza casi todo de Linux.
 3. **Windows.** `platform/windows.rs`: Apache Lounge + `mod_fcgid` + PHP NTS de
    `releases.json`, servicio de Windows, named pipe y DNS (primero el archivo `hosts`, luego
    NRPT + DNS integrado).
-4. **Extras.** DNS integrado en todas las plataformas (deja de depender de dnsmasq), PHP 7.4
+4. **UI de bandeja (estilo PHP Monitor).** App en [Tauri](https://tauri.app) que es otro
+   cliente del daemon, igual que la CLI. Gestiona sitios (abrir, HTTPS, versión de PHP,
+   carpeta pública), versiones de PHP, extensiones, servicios, bases de datos, logs y el
+   asistente de `new`. Requiere el IPC del hito 1.3; el núcleo ya es una biblioteca (`src/lib.rs`)
+   para poder reutilizarlo. **Pendiente de decidir:** cómo gestionar extensiones con los PHP
+   estáticos de Linux, que no cargan `.so` (otro origen de PHP o compilar con static-php-cli).
+5. **Extras.** DNS integrado en todas las plataformas (deja de depender de dnsmasq), PHP 7.4
    donde exista (Windows y macOS vía Homebrew), `cheka share` (túnel) y quizá un icono en la
    bandeja.
 

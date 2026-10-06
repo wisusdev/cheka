@@ -1,0 +1,21 @@
+; Generado por cheka — no editar (se sobrescribe).
+[global]
+pid = {{ run_dir }}/php-{{ v }}/fpm.pid
+error_log = {{ log_dir }}/php-{{ v }}-fpm.log
+daemonize = no
+
+[cheka]
+user = {{ user }}
+group = {{ group }}
+listen = {{ socket }}
+listen.owner = {{ user }}
+listen.group = {{ group }}
+listen.mode = 0660
+pm = ondemand
+pm.max_children = 10
+pm.process_idle_timeout = 60s
+request_terminate_timeout = 600
+catch_workers_output = yes
+decorate_workers_output = no
+clear_env = no
+php_admin_value[error_log] = {{ log_dir }}/php-{{ v }}-errors.log

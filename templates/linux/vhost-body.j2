@@ -1,0 +1,15 @@
+    ServerName {{ name }}.{{ tld }}
+    ServerAlias *.{{ name }}.{{ tld }}
+    DocumentRoot "{{ docroot }}"
+    <Directory "{{ path }}">
+        Options FollowSymLinks
+        AllowOverride All
+        Require all granted
+    </Directory>
+    DirectoryIndex index.php index.html index.htm
+    <FilesMatch "\.php$">
+        <If "-f %{REQUEST_FILENAME}">
+            SetHandler "proxy:unix:{{ socket }}|fcgi://cheka-php-{{ php }}"
+        </If>
+    </FilesMatch>
+    ErrorLog {{ log_dir }}/{{ name }}-error.log

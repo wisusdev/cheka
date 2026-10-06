@@ -202,6 +202,22 @@ sobrescribe.
 
 ---
 
+## Port a Rust (en curso)
+
+En la rama `rust-fase-1` está la reimplementación en Rust, que convive con el script y se
+compila como `cheka-rs`. El plan completo está en
+[`docs/ARQUITECTURA.md` §8](docs/ARQUITECTURA.md#8-propuesta-cheka-en-rust).
+
+```bash
+cargo build                 # target/debug/cheka-rs
+cargo test                  # unitarias + paridad byte a byte contra ./cheka (bash)
+cargo clippy --all-targets
+```
+
+Comandos ya portados: `refresh`, `sites`, `paths`, `versions`, `which-php`, `php`,
+`composer`, `status`, `php:install` (sin descarga) y `migrate` (vista previa del estado en
+TOML). Los demás responden con un aviso para usar la versión en bash.
+
 ## Pruebas
 
 Esto se ejecutó durante el desarrollo:
