@@ -11,7 +11,7 @@ use crate::Ctx;
 use crate::detect::detect;
 use crate::render::{self, Vhost};
 use crate::util::{conf_files, copy_files, dirs_equal, mkdir, write, write_mode};
-use crate::{ipc, php, sites, ui};
+use crate::{ipc, php, phpconf, sites, ui};
 
 /// Resultado visible para quien pidió el refresh sin sudo (lo lee `request_refresh`).
 fn record(ctx: &Ctx, msg: &str) -> Result<()> {
@@ -69,9 +69,21 @@ pub fn run(ctx: &Ctx) -> Result<String> {
             ui::warn(format!("No pude iniciar PHP {v}"));
         }
     }
+    // Ajustes y extensiones de cada PHP (cheka.toml [php."X.Y"]); solo se reinicia el que cambió.
+    let mut php_notes = Vec::new();
+    for v in php::SUPPORTED.iter().filter(|v| php::installed(l, v)) {
+        if phpconf::apply(ctx, v)? {
+            let unit = php::unit(v);
+            if ctx.sys.is_active(&unit) {
+                ctx.sys.restart(&unit)?;
+            }
+            php_notes.push(format!("PHP {v} reconfigurado"));
+        }
+    }
+    let with_php = |msg: String| if php_notes.is_empty() { msg } else { format!("{msg}; {}", php_notes.join(", ")) };
 
     if dirs_equal(staging.path(), &l.apache_sites) {
-        let msg = format!("Sin cambios ({count} sitios)");
+        let msg = with_php(format!("Sin cambios ({count} sitios)"));
         record(ctx, &msg)?;
         ui::ok(&msg);
         return Ok(msg);
@@ -90,7 +102,7 @@ pub fn run(ctx: &Ctx) -> Result<String> {
             ctx.sys.reload("apache2")?;
         }
     }
-    let msg = format!("Apache actualizado ({count} sitios)");
+    let msg = with_php(format!("Apache actualizado ({count} sitios)"));
     record(ctx, &msg)?;
     ui::ok(&msg);
     Ok(msg)

@@ -161,6 +161,30 @@ Los comandos sin `[sitio]` usan el sitio del directorio actual.
 Las versiones distintas de la del sistema también quedan disponibles como `php8.2`,
 `php8.4`, etc. en `/usr/local/bin`.
 
+### Ajustes y extensiones de cada versión
+
+| Comando | Qué hace |
+|---|---|
+| `php:info <versión> [--json]` | Versión exacta, archivos `.ini`, ajustes efectivos y extensiones, leídos del propio PHP-FPM. |
+| `php:ini <versión> clave=valor …` | Cambia ajustes de php.ini (p. ej. `upload_max_filesize=512M`). `clave=` vuelve al valor de cheka. |
+| `php:ext <versión> enable\|disable <ext>` | Activa o desactiva una extensión **solo en cheka**; el PHP del sistema no cambia. |
+| `php:ext <versión> install <ext>` | Instala la extensión con apt (`phpX.Y-<ext>`). Pide sudo. |
+| `php:updates` / `php:update <versión>` | Muestra qué versiones tienen un parche nuevo y lo instala. Pide sudo. |
+
+Los ajustes y extensiones se guardan en `cheka.toml` (`[php."8.5".ini]` y
+`[php."8.5".extensions]`), y el daemon los aplica y reinicia solo ese PHP. Las extensiones
+solo se pueden gestionar en el PHP de apt; los binarios estáticos (8.0–8.4) traen las suyas
+compiladas, aunque sus ajustes sí se pueden cambiar.
+
+### Herramientas de desarrollo
+
+`cheka tools` lista un catálogo de herramientas (navegadores, editores, Node, Go, Rust,
+Flutter, PostgreSQL, MongoDB, Ollama…) y marca las que ya tienes; `cheka tools install rust go`
+las instala. Pide la contraseña una sola vez para los pasos de sistema y hace como tu
+usuario los que van en tu home (nvm, rustup, Android Studio, el PATH en `~/.bashrc` y fish).
+El catálogo está en [`tools/linux.toml`](tools/linux.toml) y es fácil de ampliar. PHP,
+Apache y MariaDB no están ahí porque los gestiona cheka. En la UI es la página **Herramientas**.
+
 ### Base de datos (MariaDB)
 
 | Comando | Qué hace |
@@ -240,6 +264,21 @@ sobrescribe.
 | Apache no recarga | `sudo apache2ctl -t`. cheka valida antes de recargar y, si algo falla, restaura la configuración anterior. |
 
 ---
+
+## Panel y bandeja (UI)
+
+`ui/` contiene un panel de escritorio (Tauri) al estilo de PHP Monitor: sitios, versiones de
+PHP, servicios, nuevo proyecto y logs, más un icono en la bandeja con acceso a cada sitio.
+Usa el `cheka` instalado como motor, así que hace exactamente lo mismo que la terminal; las
+acciones de root muestran el diálogo de contraseña del sistema (`pkexec`).
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev
+cargo build --release -p cheka-ui
+./target/release/cheka-ui
+```
+
+Cerrar la ventana la oculta: cheka sigue en la bandeja ("Abrir panel" / "Salir").
 
 ## Desarrollo
 

@@ -1,0 +1,421 @@
+# Catálogo de herramientas de `cheka tools` (Ubuntu/Debian).
+#
+# Cada herramienta tiene:
+#   detect   comando que termina bien si ya está instalada (corre como el usuario)
+#   version  comando que imprime la versión (si falta, se usa la del primer paquete de apt)
+#   path     comando que imprime dónde está instalada
+#   packages paquetes de apt (versión y tamaño, sin ejecutar nada)
+#   root    pasos que necesitan root (cheka los ejecuta con sudo/pkexec)
+#   user    pasos que corren como el usuario (instalaciones en el home, PATH)
+#
+# Los pasos son bash con `set -euo pipefail`, en una carpeta temporal. Disponibles:
+#   apt_install paquete…     apt-get install -y sin preguntas
+#   add_path ruta            agrega la ruta al PATH en ~/.bashrc y en fish (si existe)
+#   add_env NOMBRE valor     exporta una variable en ~/.bashrc y en fish
+#   $CHEKA_USER, $CHEKA_HOME el usuario dueño y su home (también en los pasos de root)
+#   ver                      (en version) extrae el primer número de versión: `x --version | ver`
+#   bindir programa          (en path) carpeta real del ejecutable, siguiendo symlinks
+#   {{ db_user }}, {{ db_password }}  credenciales de [db] en cheka.toml
+#
+# PHP, Apache y MariaDB no están aquí: los gestiona cheka (`cheka install`).
+
+[[tool]]
+id = "sistema"
+name = "Actualizar el sistema"
+category = "Sistema"
+description = "apt update + apt upgrade, y utilidades base (curl, git, zip, fish…)"
+detect = "false"
+root = '''
+apt-get update
+apt-get upgrade -y
+apt_install curl wget git zip unzip fish gnupg ca-certificates apt-transport-https software-properties-common
+'''
+
+# ------------------------------------------------------------------ navegadores
+
+[[tool]]
+id = "chrome"
+name = "Google Chrome"
+category = "Navegadores"
+detect = "command -v google-chrome"
+path = 'bindir google-chrome'
+packages = ["google-chrome-stable"]
+root = '''
+wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+apt_install ./google-chrome-stable_current_amd64.deb
+'''
+
+[[tool]]
+id = "brave"
+name = "Brave"
+category = "Navegadores"
+detect = "command -v brave-browser"
+path = 'bindir brave-browser'
+packages = ["brave-browser"]
+root = "curl -fsS https://dl.brave.com/install.sh | sh"
+
+[[tool]]
+id = "edge"
+name = "Microsoft Edge"
+category = "Navegadores"
+detect = "command -v microsoft-edge"
+path = 'bindir microsoft-edge'
+packages = ["microsoft-edge-stable"]
+root = '''
+curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor --yes -o /usr/share/keyrings/microsoft-edge.gpg
+echo 'deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft-edge.gpg] https://packages.microsoft.com/repos/edge stable main' > /etc/apt/sources.list.d/microsoft-edge.list
+apt-get update
+apt_install microsoft-edge-stable
+'''
+
+# ------------------------------------------------------------------ editores y desarrollo
+
+[[tool]]
+id = "vscode"
+name = "Visual Studio Code"
+category = "Editores y desarrollo"
+detect = "command -v code"
+path = 'echo /usr/share/code'
+packages = ["code"]
+root = '''
+wget -q -O vscode.deb 'https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64'
+apt_install ./vscode.deb
+'''
+
+[[tool]]
+id = "sublime"
+name = "Sublime Text"
+category = "Editores y desarrollo"
+detect = "command -v subl"
+path = 'echo /opt/sublime_text'
+packages = ["sublime-text"]
+root = '''
+wget -qO - https://download.sublimetext.com/sublimehq-pub.gpg | gpg --dearmor --yes -o /usr/share/keyrings/sublimehq-archive.gpg
+echo 'deb [signed-by=/usr/share/keyrings/sublimehq-archive.gpg] https://download.sublimetext.com/ apt/stable/' > /etc/apt/sources.list.d/sublime-text.list
+apt-get update
+apt_install sublime-text
+'''
+
+[[tool]]
+id = "zed"
+name = "Zed"
+category = "Editores y desarrollo"
+description = "Editor de código rápido, escrito en Rust. Se instala en tu home"
+detect = 'test -x "$HOME/.local/zed.app/bin/zed"'
+version = '"$HOME/.local/zed.app/bin/zed" --version | ver'
+path = 'echo "$HOME/.local/zed.app"'
+user = '''
+curl -fsSL https://zed.dev/install.sh | sh
+add_path '$HOME/.local/bin'
+'''
+
+[[tool]]
+id = "postman"
+name = "Postman"
+category = "Editores y desarrollo"
+detect = "test -x /opt/Postman/Postman"
+version = '''python3 -c 'import json;print(json.load(open("/opt/Postman/app/resources/app/package.json"))["version"])''''
+path = 'echo /opt/Postman'
+root = '''
+wget -q https://dl.pstmn.io/download/latest/linux_64 -O postman.tar.gz
+rm -rf /opt/Postman
+tar -xzf postman.tar.gz -C /opt
+cat > /usr/share/applications/postman.desktop <<'END'
+[Desktop Entry]
+Encoding=UTF-8
+Name=Postman
+Exec=/opt/Postman/Postman %U
+Icon=/opt/Postman/app/resources/app/assets/icon.png
+Terminal=false
+Type=Application
+Categories=Development;
+END
+'''
+
+[[tool]]
+id = "github-desktop"
+name = "GitHub Desktop"
+category = "Editores y desarrollo"
+detect = "command -v github-desktop"
+path = 'bindir github-desktop'
+packages = ["github-desktop"]
+root = '''
+url=$(curl -s https://api.github.com/repos/shiftkey/desktop/releases/latest |
+      python3 -c 'import json,sys;print([a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if a["name"].endswith(".deb") and "amd64" in a["name"]][0])')
+wget -q "$url" -O github-desktop.deb
+apt_install ./github-desktop.deb
+'''
+
+[[tool]]
+id = "terminator"
+name = "Terminator"
+category = "Editores y desarrollo"
+detect = "command -v terminator"
+path = 'command -v terminator'
+packages = ["terminator"]
+root = "apt_install terminator"
+
+[[tool]]
+id = "dbgate"
+name = "DbGate"
+category = "Editores y desarrollo"
+description = "Cliente de bases de datos (MariaDB, PostgreSQL, MongoDB…)"
+detect = "command -v dbgate || dpkg -s dbgate >/dev/null 2>&1"
+path = 'bindir dbgate'
+packages = ["dbgate"]
+root = '''
+url=$(curl -s https://api.github.com/repos/dbgate/dbgate/releases/latest |
+      python3 -c 'import json,sys;print([a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if a["name"].endswith("linux_amd64.deb")][0])')
+wget -q "$url" -O dbgate.deb
+apt_install ./dbgate.deb
+'''
+
+# ------------------------------------------------------------------ PHP (complementos)
+
+[[tool]]
+id = "composer"
+name = "Composer"
+category = "PHP"
+description = "Gestor de dependencias de PHP (lo usa `cheka new`)"
+detect = "command -v composer"
+version = 'composer --version | ver'
+path = 'command -v composer'
+root = '''
+expected=$(curl -s https://composer.github.io/installer.sig)
+curl -sS https://getcomposer.org/installer -o composer-setup.php
+actual=$(php -r "echo hash_file('sha384', 'composer-setup.php');")
+[ "$expected" = "$actual" ] || { echo "Checksum de Composer incorrecto"; exit 1; }
+php composer-setup.php --quiet --install-dir=/usr/local/bin --filename=composer
+'''
+
+[[tool]]
+id = "laravel"
+name = "Laravel installer"
+category = "PHP"
+requires = ["composer"]
+detect = 'test -x "$HOME/.config/composer/vendor/bin/laravel"'
+version = '"$HOME/.config/composer/vendor/bin/laravel" --version | ver'
+path = 'echo "$HOME/.config/composer/vendor/laravel/installer"'
+user = '''
+composer global require laravel/installer
+add_path '$HOME/.config/composer/vendor/bin'
+'''
+
+# ------------------------------------------------------------------ lenguajes
+
+[[tool]]
+id = "rust"
+name = "Rust (rustup)"
+category = "Lenguajes"
+description = "Compilador, cargo y clippy en ~/.cargo"
+detect = 'test -x "$HOME/.cargo/bin/rustc"'
+version = '"$HOME/.cargo/bin/rustc" --version | ver'
+path = 'echo "$HOME/.cargo"'
+user = '''
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile default --no-modify-path
+add_path '$HOME/.cargo/bin'
+'''
+
+[[tool]]
+id = "node"
+name = "Node.js (nvm) + Angular, Nest y Yarn"
+category = "Lenguajes"
+detect = 'test -s "$HOME/.nvm/nvm.sh"'
+version = 'set +u; . "$HOME/.nvm/nvm.sh" >/dev/null; node --version | ver'
+path = 'echo "$HOME/.nvm"'
+user = '''
+nvm_tag=$(curl -s https://api.github.com/repos/nvm-sh/nvm/releases/latest | python3 -c 'import json,sys;print(json.load(sys.stdin)["tag_name"])')
+curl -so- "https://raw.githubusercontent.com/nvm-sh/nvm/$nvm_tag/install.sh" | bash
+export NVM_DIR="$HOME/.nvm"
+set +u; . "$NVM_DIR/nvm.sh"
+nvm install --lts
+nvm alias default 'lts/*'
+set -u
+npm install -g @angular/cli @nestjs/cli
+corepack enable
+corepack prepare yarn@stable --activate
+'''
+
+[[tool]]
+id = "go"
+name = "Go"
+category = "Lenguajes"
+detect = "test -x /usr/local/go/bin/go"
+version = 'head -1 /usr/local/go/VERSION | ver'
+path = 'echo /usr/local/go'
+root = '''
+ver=$(curl -s 'https://go.dev/VERSION?m=text' | head -1)
+wget -q "https://go.dev/dl/$ver.linux-amd64.tar.gz" -O go.tar.gz
+rm -rf /usr/local/go
+tar -C /usr/local -xzf go.tar.gz
+'''
+user = '''
+add_path /usr/local/go/bin
+add_path '$HOME/go/bin'
+'''
+
+[[tool]]
+id = "ruby"
+name = "Ruby"
+category = "Lenguajes"
+detect = "command -v ruby"
+version = 'ruby --version | ver'
+path = 'command -v ruby'
+packages = ["ruby-full"]
+root = "apt_install ruby-full"
+
+[[tool]]
+id = "dotnet"
+name = ".NET SDK 10"
+category = "Lenguajes"
+detect = "command -v dotnet"
+version = 'dotnet --version'
+path = 'echo /usr/lib/dotnet'
+packages = ["dotnet-sdk-10.0"]
+root = "apt_install dotnet-sdk-10.0"
+
+[[tool]]
+id = "java"
+name = "Java (Oracle JDK 25)"
+category = "Lenguajes"
+detect = "command -v java"
+version = 'java -version 2>&1 | head -1 | ver'
+path = 'dirname "$(bindir java)"'
+root = '''
+wget -q https://download.oracle.com/java/25/latest/jdk-25_linux-x64_bin.deb -O jdk.deb
+apt_install ./jdk.deb
+'''
+
+# ------------------------------------------------------------------ móvil
+
+[[tool]]
+id = "flutter"
+name = "Flutter"
+category = "Móvil"
+detect = "test -x /opt/flutter/bin/flutter"
+version = '''python3 -c 'import json;print(json.load(open("/opt/flutter/bin/cache/flutter.version.json"))["frameworkVersion"])''''
+path = 'echo /opt/flutter'
+root = '''
+apt_install clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-14-dev xz-utils mesa-utils
+archive=$(curl -s https://storage.googleapis.com/flutter_infra_release/releases/releases_linux.json |
+          python3 -c 'import json,sys;d=json.load(sys.stdin);h=d["current_release"]["stable"];print([r for r in d["releases"] if r["hash"]==h][0]["archive"])')
+wget -q "https://storage.googleapis.com/flutter_infra_release/releases/$archive" -O flutter.tar.xz
+rm -rf /opt/flutter
+tar -xf flutter.tar.xz -C /opt
+chown -R "$CHEKA_USER:" /opt/flutter    # Flutter necesita escribir en su carpeta
+'''
+user = '''
+add_env FLUTTER_HOME /opt/flutter
+add_path /opt/flutter/bin
+'''
+
+[[tool]]
+id = "android-studio"
+name = "Android Studio"
+category = "Móvil"
+description = "Se instala en tu home para que pueda actualizarse sola; el SDK queda en ~/Android/Sdk"
+detect = 'test -x "$HOME/.local/share/android-studio/bin/studio"'
+version = '''python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.local/share/android-studio/product-info.json")))["dataDirectoryName"])' | ver'''
+path = 'echo "$HOME/.local/share/android-studio"'
+user = '''
+url=$(curl -sL https://developer.android.com/studio | grep -oE 'https://[^"]*android-studio-[^"]*-linux\.tar\.gz' | sort -uV | tail -1)
+[ -n "$url" ]
+wget -q "$url" -O android-studio.tar.gz
+mkdir -p "$HOME/.local/share/applications"
+rm -rf "$HOME/.local/share/android-studio"
+tar -xzf android-studio.tar.gz -C "$HOME/.local/share"
+cat > "$HOME/.local/share/applications/android-studio.desktop" <<END
+[Desktop Entry]
+Name=Android Studio
+Exec=$HOME/.local/share/android-studio/bin/studio %f
+Icon=$HOME/.local/share/android-studio/bin/studio.png
+Terminal=false
+Type=Application
+Categories=Development;IDE;
+StartupWMClass=jetbrains-studio
+END
+add_env ANDROID_HOME '$HOME/Android/Sdk'
+add_path '$HOME/.local/share/android-studio/bin'
+add_path '$HOME/Android/Sdk/cmdline-tools/latest/bin'
+add_path '$HOME/Android/Sdk/platform-tools'
+'''
+
+# ------------------------------------------------------------------ bases de datos y servicios
+
+[[tool]]
+id = "postgres-redis"
+name = "PostgreSQL + Redis"
+category = "Bases de datos y servicios"
+description = "Crea el usuario de [db] de cheka.toml como superusuario"
+detect = "command -v psql >/dev/null && command -v redis-server"
+version = 'echo "PostgreSQL $(psql --version | ver) · Redis $(redis-server --version | grep -oE "v=[0-9.]+" | cut -d= -f2)"'
+path = 'ls -d /usr/lib/postgresql/* | tail -1'
+packages = ["postgresql-18", "postgresql-18-jit", "redis-server", "redis-tools"]
+root = '''
+apt_install postgresql postgresql-client redis-server
+systemctl enable --now postgresql redis-server
+sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
+DO \$\$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ db_user }}') THEN
+    CREATE ROLE "{{ db_user }}" WITH LOGIN SUPERUSER PASSWORD '{{ db_password }}';
+  ELSE
+    ALTER ROLE "{{ db_user }}" WITH LOGIN SUPERUSER PASSWORD '{{ db_password }}';
+  END IF;
+END \$\$;
+SELECT 'CREATE DATABASE "{{ db_user }}" OWNER "{{ db_user }}"'
+  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ db_user }}')\gexec
+SQL
+'''
+
+[[tool]]
+id = "mongodb"
+name = "MongoDB 8.2"
+category = "Bases de datos y servicios"
+description = "MongoDB aún no publica paquetes para Ubuntu 26.04: usa los de 24.04 (noble)"
+detect = "command -v mongod"
+version = 'mongod --version | head -1 | ver'
+path = 'command -v mongod'
+packages = ["mongodb-org-server", "mongodb-org-mongos", "mongodb-mongosh"]
+root = '''
+curl -fsSL https://pgp.mongodb.com/server-8.0.asc | gpg --dearmor --yes -o /usr/share/keyrings/mongodb-server-8.0.gpg
+echo 'deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.2 multiverse' > /etc/apt/sources.list.d/mongodb-org.list
+apt-get update
+apt_install mongodb-org
+systemctl enable --now mongod
+'''
+
+[[tool]]
+id = "ollama"
+name = "Ollama"
+category = "Bases de datos y servicios"
+description = "Modelos de IA locales"
+detect = "command -v ollama"
+version = 'ollama --version 2>/dev/null | ver'
+path = 'command -v ollama'
+root = "curl -fsSL https://ollama.com/install.sh | sh"
+
+# ------------------------------------------------------------------ multimedia
+
+[[tool]]
+id = "multimedia"
+name = "GIMP y ffmpeg"
+category = "Multimedia"
+detect = "command -v gimp >/dev/null && command -v ffmpeg"
+version = 'echo "GIMP $(dpkg-query -W -f="\${Version}" gimp | ver) · ffmpeg $(dpkg-query -W -f="\${Version}" ffmpeg | sed "s/^[0-9]*://" | ver)"'
+path = 'echo /usr/bin'
+packages = ["gimp", "ffmpeg"]
+root = "apt_install gimp ffmpeg"
+
+[[tool]]
+id = "spotify"
+name = "Spotify"
+category = "Multimedia"
+detect = "command -v spotify"
+path = 'echo /usr/share/spotify'
+packages = ["spotify-client"]
+root = '''
+curl -sS https://download.spotify.com/debian/pubkey_5384CE82BA52C83A.gpg | gpg --dearmor --yes -o /usr/share/keyrings/spotify.gpg
+echo 'deb [signed-by=/usr/share/keyrings/spotify.gpg] https://repository.spotify.com stable non-free' > /etc/apt/sources.list.d/spotify.list
+apt-get update
+apt_install spotify-client
+'''

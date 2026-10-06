@@ -1,0 +1,269 @@
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --sidebar: #eef0f4;
+  --text: #1c1f26;
+  --muted: #667085;
+  --border: #e3e6ec;
+  --accent: #5b4be6;
+  --accent-text: #ffffff;
+  --accent-soft: #ecebfd;
+  --ok: #12a150;
+  --warn: #b26b00;
+  --warn-soft: #fff1d6;
+  --bad: #d92d20;
+  --bad-soft: #fde8e6;
+  --code-bg: #f1f2f5;
+  --console-bg: #14161b;
+  --console-text: #d9dde5;
+  --radius: 10px;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171c;
+    --panel: #1c1f26;
+    --sidebar: #111318;
+    --text: #e7e9ee;
+    --muted: #98a1b2;
+    --border: #2b2f39;
+    --accent: #8b7cf6;
+    --accent-text: #ffffff;
+    --accent-soft: #2a2550;
+    --code-bg: #252933;
+    --warn: #f5b84a;
+    --warn-soft: #3a2e14;
+    --bad: #f97066;
+    --bad-soft: #3b1d1b;
+    --console-bg: #0d0f13;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; margin: 0; }
+
+body {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Ubuntu, sans-serif;
+}
+
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
+
+.muted { color: var(--muted); }
+.hidden { display: none !important; }
+
+/* ---------- barra lateral ---------- */
+.sidebar {
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 12px;
+  gap: 18px;
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 17px; padding: 0 6px; }
+nav { display: flex; flex-direction: column; gap: 2px; }
+.nav-item {
+  all: unset;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text);
+}
+.nav-item:hover { background: var(--border); }
+.nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav-item:focus-visible { outline: 2px solid var(--accent); }
+.count { font-size: 12px; color: var(--muted); font-weight: 500; }
+.health { margin-top: auto; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--muted); padding: 0 6px; }
+.health-row { display: flex; align-items: center; gap: 8px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--ok); }
+.dot.bad { background: var(--bad); }
+
+/* ---------- páginas ---------- */
+main { overflow: auto; padding: 24px 28px; }
+.page { display: none; }
+.page.active { display: block; }
+.page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+h1 { margin: 0 0 4px; font-size: 22px; }
+h2 { margin: 0 0 6px; font-size: 17px; }
+h3 { margin: 0 0 8px; font-size: 14px; }
+.page-head p { margin: 0; }
+.head-actions { display: flex; gap: 8px; align-items: center; }
+
+/* ---------- controles ---------- */
+.btn {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { border-color: var(--accent); }
+.btn.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.btn.ghost { background: transparent; }
+.btn.small { padding: 3px 9px; font-size: 12.5px; }
+.btn.danger:hover { border-color: var(--bad); color: var(--bad); }
+.btn[disabled] { opacity: .55; cursor: progress; }
+input[type=text], input[type=search], select {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 9px;
+  font: inherit;
+}
+input:focus, select:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+
+.switch { position: relative; width: 34px; height: 20px; display: inline-block; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch span {
+  position: absolute; inset: 0; border-radius: 20px; background: var(--border); cursor: pointer; transition: background .15s;
+}
+.switch span::before {
+  content: ""; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; border-radius: 50%;
+  background: #fff; transition: transform .15s;
+}
+.switch input:checked + span { background: var(--ok); }
+.switch input:checked + span::before { transform: translateX(14px); }
+.switch input:focus-visible + span { outline: 2px solid var(--accent); }
+
+.inline-form { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+.inline-form input[type=text]:first-child { flex: 1; min-width: 260px; }
+
+/* ---------- tabla de sitios ---------- */
+.table-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr:last-child td { border-bottom: none; }
+.site-name { font-weight: 600; }
+.site-path { font-size: 12px; color: var(--muted); word-break: break-all; }
+.site-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.badge { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 20px; background: var(--code-bg); color: var(--muted); font-weight: 500; white-space: nowrap; }
+.badge.warn { background: var(--warn-soft); color: var(--warn); }
+.url-cell { white-space: nowrap; }
+.link { color: var(--accent); cursor: pointer; text-decoration: none; }
+.link:hover { text-decoration: underline; }
+.row-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+td select { max-width: 170px; }
+.empty { padding: 40px; text-align: center; color: var(--muted); }
+
+/* ---------- PHP ---------- */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.card.default { border-color: var(--accent); }
+.card .version { font-size: 24px; font-weight: 700; }
+.card .meta { font-size: 12.5px; color: var(--muted); min-height: 18px; }
+
+.card .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; }
+.badge.update { background: var(--accent-soft); color: var(--accent); }
+.small { font-size: 12.5px; }
+
+/* ---------- detalle de PHP ---------- */
+.back { margin-bottom: 12px; padding-left: 0; border: none; color: var(--accent); }
+.detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin-bottom: 16px; align-items: start; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; }
+.panel > p.small { margin: 0 0 12px; }
+.setting-row { display: grid; grid-template-columns: 1fr 140px auto; gap: 4px 10px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--border); }
+.setting-row:last-child { border-bottom: none; }
+.setting-row .key { font: 12.5px ui-monospace, "Ubuntu Mono", monospace; }
+.setting-row .hint { grid-column: 1 / -1; font-size: 12px; color: var(--muted); margin-top: -2px; }
+.setting-row input { width: 100%; }
+.setting-row input.dirty { border-color: var(--accent); }
+.add-setting { display: grid; grid-template-columns: 1fr 140px; gap: 10px; margin: 12px 0; }
+#pd-ext-filter { width: 100%; margin-bottom: 10px; }
+.ext-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px 12px; max-height: 420px; overflow: auto; }
+.ext { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; font: 12.5px ui-monospace, "Ubuntu Mono", monospace; }
+.ext.off { color: var(--muted); }
+.ext .pending { font: 11px system-ui, sans-serif; color: var(--warn); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chips .badge { font: 12px ui-monospace, "Ubuntu Mono", monospace; }
+.install-ext { display: flex; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.install-ext select { flex: 1; }
+details summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 10px; }
+details summary::-webkit-details-marker { display: none; }
+details summary h2 { margin: 0; }
+details summary::before { content: "▸"; color: var(--muted); }
+details[open] summary::before { content: "▾"; }
+details[open] summary { margin-bottom: 10px; }
+.files { margin: 0; padding-left: 18px; font: 12.5px ui-monospace, "Ubuntu Mono", monospace; color: var(--muted); }
+.files li:first-child { color: var(--text); }
+
+/* ---------- herramientas ---------- */
+.tool-group { margin-bottom: 18px; }
+.tool-group h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 8px; }
+.tool-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+.tool { display: flex; gap: 10px; align-items: flex-start; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; cursor: pointer; }
+.tool:hover { border-color: var(--accent); }
+.tool input { margin-top: 3px; accent-color: var(--accent); }
+.tool .name { font-weight: 600; }
+.tool .desc { font-size: 12px; color: var(--muted); }
+.badge.ok { background: #dcf5e6; color: #0e7c3e; }
+@media (prefers-color-scheme: dark) { .badge.ok { background: #12351f; color: #5fd38d; } }
+#tools-output { margin-top: 8px; }
+.tool > div { flex: 1; min-width: 0; }
+.tool .meta { font-size: 12px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool .ver { font: 12px ui-monospace, "Ubuntu Mono", monospace; color: var(--text); }
+.tool .more { float: right; }
+.tool .details { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.tool .details .facts { margin-bottom: 8px; }
+
+/* ---------- servicios ---------- */
+.cards.services { grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); margin-bottom: 16px; }
+.service-head { display: flex; align-items: center; gap: 8px; }
+.service-head h3 { margin: 0; font-size: 15px; flex: 1; }
+.state-badge { font-size: 11.5px; padding: 1px 8px; border-radius: 20px; background: var(--code-bg); color: var(--muted); }
+.state-badge.active { background: #dcf5e6; color: #0e7c3e; }
+.state-badge.failed { background: var(--bad-soft); color: var(--bad); }
+@media (prefers-color-scheme: dark) { .state-badge.active { background: #12351f; color: #5fd38d; } }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12.5px; margin: 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; word-break: break-all; }
+.boot { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.logs-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.logs-head h2 { margin: 0; }
+.service-logs h3 { margin: 14px 0 6px; font: 12.5px ui-monospace, "Ubuntu Mono", monospace; color: var(--muted); }
+
+/* ---------- nuevo proyecto ---------- */
+.new-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
+.new-form label { display: flex; flex-direction: column; gap: 5px; font-weight: 500; }
+.new-form label.check { flex-direction: row; align-items: center; gap: 8px; align-self: end; padding-bottom: 6px; }
+.form-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; }
+
+/* ---------- consolas y logs ---------- */
+.console {
+  background: var(--console-bg);
+  color: var(--console-text);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  font: 12.5px/1.5 ui-monospace, "JetBrains Mono", "Ubuntu Mono", monospace;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+.console .err { color: #ffb4a8; }
+.logs { display: grid; grid-template-columns: 1fr; gap: 16px; }
+.logs .console { min-height: 160px; }
+
+/* ---------- avisos ---------- */
+.banner { background: var(--bad-soft); color: var(--text); border: 1px solid var(--bad); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 18px; white-space: pre-wrap; }
+.banner strong { color: var(--bad); }
+.banner code { white-space: nowrap; }
+.toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 10; max-width: 420px; }
+.toast { background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--ok); border-radius: 8px; padding: 10px 14px; box-shadow: 0 6px 20px rgba(0,0,0,.12); white-space: pre-wrap; }
+.toast.error { border-left-color: var(--bad); }

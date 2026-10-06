@@ -42,6 +42,25 @@ pub struct State {
     pub docroot: BTreeMap<String, String>,
     pub db_user: String,
     pub db_password: String,
+    /// Ajustes por versión de PHP (`[php."8.5"]`).
+    pub php: BTreeMap<String, PhpSettings>,
+}
+
+/// Ajustes de una versión de PHP que cheka aplica sobre su php.ini.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhpSettings {
+    /// Directivas de php.ini (p. ej. upload_max_filesize = "512M").
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ini: BTreeMap<String, String>,
+    /// Extensiones activadas (true) o desactivadas (false) respecto a lo que trae el sistema.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extensions: BTreeMap<String, bool>,
+}
+
+impl PhpSettings {
+    pub fn is_empty(&self) -> bool {
+        self.ini.is_empty() && self.extensions.is_empty()
+    }
 }
 
 impl Default for State {
@@ -57,6 +76,7 @@ impl Default for State {
             docroot: BTreeMap::new(),
             db_user: DB_USER.to_string(),
             db_password: DB_PASS.to_string(),
+            php: BTreeMap::new(),
         }
     }
 }
@@ -78,6 +98,8 @@ struct Doc {
     sites: BTreeMap<String, SiteDoc>,
     #[serde(default)]
     db: DbDoc,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    php: BTreeMap<String, PhpSettings>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -154,6 +176,7 @@ impl State {
             links: doc.links.into_iter().map(|(n, p)| (n, PathBuf::from(p))).collect(),
             db_user: doc.db.user,
             db_password: doc.db.password,
+            php: doc.php.into_iter().filter(|(_, s)| !s.is_empty()).collect(),
             ..Default::default()
         };
         for (name, site) in doc.sites {
@@ -218,6 +241,7 @@ impl State {
                 s.secured.clone(),
                 s.docroot.clone(),
                 (s.db_user.clone(), s.db_password.clone()),
+                s.php.clone(),
             )
         };
         key(self) == key(other)
@@ -246,6 +270,7 @@ impl State {
             links: self.links.iter().map(|(n, t)| (n.clone(), t.display().to_string())).collect(),
             sites,
             db: DbDoc { user: self.db_user.clone(), password: self.db_password.clone() },
+            php: self.php.iter().filter(|(_, s)| !s.is_empty()).map(|(v, s)| (v.clone(), s.clone())).collect(),
         };
         let body = toml::to_string_pretty(&doc)?;
         Ok(format!("# Estado de cheka. Lo escribe cheka; puedes editarlo a mano con cuidado.\n{body}"))
@@ -281,7 +306,8 @@ impl State {
     }
 
     /// Escribe el estado en el formato de bash (para volver a esa versión) y aparta
-    /// `cheka.toml` como `cheka.toml.bak`.
+    /// `cheka.toml` como `cheka.toml.bak`. Los ajustes de PHP (`[php]`) no existen en la
+    /// versión en bash: se pierden en ese formato, pero siguen en el `.bak`.
     pub fn save_legacy(&mut self, id: &Identity) -> Result<()> {
         let c = self.conf.clone();
         for dir in ["links", "isolated", "secured", "docroot"] {

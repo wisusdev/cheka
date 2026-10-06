@@ -1,0 +1,483 @@
+//! Panel y bandeja de cheka (Tauri). Es otro cliente del núcleo, igual que la CLI: usa el
+//! `cheka` instalado como motor (JSON para leer, los mismos comandos para modificar), así
+//! que se comporta exactamente igual que la terminal. Las acciones de root pasan por
+//! `pkexec` (diálogo gráfico de contraseña).
+
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::Mutex;
+
+use serde::Serialize;
+use serde_json::Value;
+use tauri::image::Image;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::tray::TrayIconBuilder;
+use tauri::{AppHandle, Emitter, Manager, WindowEvent, Wry};
+use tauri_plugin_opener::OpenerExt;
+
+/// Comandos que la UI puede ejecutar como el usuario.
+const USER_COMMANDS: &[&str] = &[
+    "secure", "unsecure", "isolate", "unisolate", "use", "docroot", "link", "unlink", "refresh", "park", "forget",
+    "php:ini", "php:ext",
+];
+/// Comandos que requieren root (vía pkexec).
+const ROOT_COMMANDS: &[&str] = &["start", "stop", "restart", "php:install", "php:update", "php:ext", "service"];
+const LOG_DIR: &str = "/var/log/cheka";
+const TRAY_ID: &str = "cheka";
+
+/// Nombres de sitio de la bandeja actual, para no reconstruir el menú si no cambió.
+#[derive(Default)]
+struct TrayState(Mutex<Vec<(String, String)>>);
+
+#[derive(Serialize)]
+struct CmdOut {
+    ok: bool,
+    stdout: String,
+    stderr: String,
+}
+
+/// Binario de cheka: `CHEKA_BIN` (desarrollo) o el instalado.
+fn cheka_bin() -> PathBuf {
+    if let Some(b) = std::env::var_os("CHEKA_BIN") {
+        return PathBuf::from(b);
+    }
+    PathBuf::from("/usr/local/bin/cheka")
+}
+
+fn run_cheka(args: &[String], cwd: Option<&Path>) -> Result<CmdOut, String> {
+    let mut cmd = Command::new(cheka_bin());
+    cmd.args(args).stdin(Stdio::null());
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    let out = cmd.output().map_err(|e| format!("No pude ejecutar cheka: {e}"))?;
+    Ok(CmdOut {
+        ok: out.status.success(),
+        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+    })
+}
+
+fn json(args: &[&str]) -> Result<Value, String> {
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let out = run_cheka(&args, None)?;
+    if !out.ok {
+        return Err(out.stderr.trim().to_string());
+    }
+    serde_json::from_str(&out.stdout).map_err(|e| format!("Respuesta inesperada de cheka: {e}"))
+}
+
+fn allowed(args: &[String], list: &[&str]) -> Result<(), String> {
+    match args.first() {
+        Some(c) if list.contains(&c.as_str()) => Ok(()),
+        _ => Err(format!("Comando no permitido desde la UI: {:?}", args.first())),
+    }
+}
+
+fn valid_site(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+// ------------------------------------------------------------------ lectura ----
+
+#[tauri::command]
+async fn sites(app: AppHandle) -> Result<Value, String> {
+    let value = json(&["sites", "--json"])?;
+    update_tray(&app, &value);
+    Ok(value)
+}
+
+#[tauri::command]
+async fn versions() -> Result<Value, String> {
+    json(&["versions", "--json"])
+}
+
+#[tauri::command]
+async fn status() -> Result<Value, String> {
+    json(&["status", "--json"])
+}
+
+fn valid_version(v: &str) -> bool {
+    v.len() <= 4 && v.chars().all(|c| c.is_ascii_digit() || c == '.')
+}
+
+/// Ajustes, extensiones y archivos de una versión de PHP.
+#[tauri::command]
+async fn php_info(version: String) -> Result<Value, String> {
+    if !valid_version(&version) {
+        return Err("Versión inválida".into());
+    }
+    json(&["php:info", &version, "--json"])
+}
+
+/// Detalles de cada servicio (versión, puertos, memoria…).
+#[tauri::command]
+async fn services() -> Result<Value, String> {
+    json(&["services", "--json"])
+}
+
+/// Journal y archivos de log de un servicio.
+#[tauri::command]
+async fn service_logs(id: String) -> Result<Value, String> {
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '@' | '.')) {
+        return Err("Servicio inválido".into());
+    }
+    json(&["service", &id, "logs", "--json"])
+}
+
+/// Catálogo de herramientas con su estado.
+#[tauri::command]
+async fn tools() -> Result<Value, String> {
+    json(&["tools", "--json"])
+}
+
+/// Versión, carpeta y paquetes de herramientas (`size`: también lo que ocupan; es más lento).
+#[tauri::command]
+async fn tools_info(ids: Vec<String>, size: bool) -> Result<Value, String> {
+    if !ids.iter().all(|i| valid_tool_id(i)) {
+        return Err("Selección inválida".into());
+    }
+    let mut args = vec!["tools", "info", "--json"];
+    if size {
+        args.push("--size");
+    }
+    args.extend(ids.iter().map(String::as_str));
+    json(&args)
+}
+
+fn valid_tool_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Ejecuta un comando enviando cada línea a la UI (evento `tools-output`); devuelve el
+/// resultado de cada herramienta según las líneas `::cheka-tool ok|fail <id>`.
+fn stream_tools_phase(app: &AppHandle, mut cmd: Command) -> std::collections::BTreeMap<String, bool> {
+    let mut results = std::collections::BTreeMap::new();
+    let Ok(mut child) = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() else {
+        let _ = app.emit("tools-output", OutputLine { line: "No pude ejecutar cheka".into(), error: true });
+        return results;
+    };
+    let err = child.stderr.take().unwrap();
+    let app2 = app.clone();
+    let err_thread = std::thread::spawn(move || {
+        for line in BufReader::new(err).lines().map_while(Result::ok) {
+            let _ = app2.emit("tools-output", OutputLine { line, error: true });
+        }
+    });
+    for line in BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
+        if let Some(rest) = line.strip_prefix("::cheka-tool ") {
+            if let Some((state, id)) = rest.split_once(' ') {
+                results.insert(id.trim().to_string(), state == "ok");
+            }
+        } else {
+            let _ = app.emit("tools-output", OutputLine { line, error: false });
+        }
+    }
+    let _ = err_thread.join();
+    let _ = child.wait();
+    results
+}
+
+#[derive(Clone, Serialize)]
+struct ToolsDone {
+    ok: Vec<String>,
+    failed: Vec<String>,
+}
+
+/// Instala herramientas: los pasos de root con un solo pkexec y luego los del usuario.
+#[tauri::command]
+async fn install_tools(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
+    if ids.is_empty() || !ids.iter().all(|i| valid_tool_id(i)) {
+        return Err("Selección inválida".into());
+    }
+    let mut plan_args = vec!["tools", "plan"];
+    plan_args.extend(ids.iter().map(String::as_str));
+    let plan = json(&plan_args)?;
+    let steps: Vec<(String, bool)> = plan
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| Some((s["id"].as_str()?.to_string(), s["needs_root"].as_bool()?)))
+        .collect();
+    std::thread::spawn(move || {
+        let all: Vec<String> = steps.iter().map(|(id, _)| id.clone()).collect();
+        let mut root_ok = std::collections::BTreeMap::new();
+        if steps.iter().any(|(_, root)| *root) {
+            let mut cmd = Command::new("pkexec");
+            cmd.arg(cheka_bin()).args(["tools", "_root"]).args(&all);
+            root_ok = stream_tools_phase(&app, cmd);
+            if root_ok.is_empty() {
+                let _ = app.emit("tools-output", OutputLine { line: "Se canceló la autorización".into(), error: true });
+            }
+        }
+        let user_ids: Vec<String> = all
+            .iter()
+            .filter(|id| root_ok.get(*id).copied().unwrap_or(!steps.iter().any(|(_, r)| *r)))
+            .cloned()
+            .collect();
+        let mut user_ok = std::collections::BTreeMap::new();
+        if !user_ids.is_empty() {
+            let mut cmd = Command::new(cheka_bin());
+            cmd.args(["tools", "_user"]).args(&user_ids);
+            user_ok = stream_tools_phase(&app, cmd);
+        }
+        let (ok, failed): (Vec<String>, Vec<String>) =
+            all.into_iter().partition(|id| user_ok.get(id).copied().unwrap_or(false));
+        let _ = app.emit("tools-done", ToolsDone { ok, failed });
+    });
+    Ok(())
+}
+
+/// Versiones instaladas con actualización disponible (consulta la red).
+#[tauri::command]
+async fn php_updates() -> Result<Value, String> {
+    json(&["php:updates", "--json"])
+}
+
+/// Últimas líneas de los logs de Apache y PHP de un sitio.
+#[tauri::command]
+async fn read_log(site: String, php: String) -> Result<Value, String> {
+    if !valid_site(&site) || !php.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return Err("Sitio o versión inválidos".into());
+    }
+    let tail = |file: String| -> Value {
+        let path = Path::new(LOG_DIR).join(&file);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let lines: Vec<&str> = text.lines().collect();
+                let start = lines.len().saturating_sub(200);
+                serde_json::json!({ "file": path.display().to_string(), "lines": lines[start..] })
+            }
+            Err(_) => serde_json::json!({ "file": path.display().to_string(), "lines": [] }),
+        }
+    };
+    Ok(serde_json::json!({
+        "apache": tail(format!("{site}-error.log")),
+        "php": tail(format!("php-{php}-errors.log")),
+    }))
+}
+
+// ------------------------------------------------------------------ acciones ----
+
+/// Comando de cheka como el usuario (lista blanca).
+#[tauri::command]
+async fn run(args: Vec<String>) -> Result<CmdOut, String> {
+    allowed(&args, USER_COMMANDS)?;
+    // Instalar extensiones necesita root: va por run_root (pkexec).
+    if args.first().is_some_and(|c| c == "php:ext") && args.get(2).is_some_and(|a| a == "install") {
+        return Err("Instalar extensiones requiere permisos de administrador".into());
+    }
+    run_cheka(&args, None)
+}
+
+/// `cheka link <nombre>` desde la carpeta indicada.
+#[tauri::command]
+async fn link_folder(path: String, name: String) -> Result<CmdOut, String> {
+    let dir = PathBuf::from(&path);
+    if !dir.is_absolute() || !dir.is_dir() {
+        return Err(format!("No existe la carpeta {path}"));
+    }
+    let mut args = vec!["link".to_string()];
+    if !name.trim().is_empty() {
+        args.push(name.trim().to_string());
+    }
+    run_cheka(&args, Some(&dir))
+}
+
+/// Comando de cheka como root, con el diálogo gráfico de pkexec (lista blanca).
+#[tauri::command]
+async fn run_root(args: Vec<String>) -> Result<CmdOut, String> {
+    allowed(&args, ROOT_COMMANDS)?;
+    // De `service`, como root solo las acciones (los logs se leen como el usuario).
+    if args.first().is_some_and(|c| c == "service")
+        && !args.get(2).is_some_and(|a| ["start", "stop", "restart", "enable", "disable"].contains(&a.as_str()))
+    {
+        return Err("Acción de servicio no permitida".into());
+    }
+    // De php:ext, como root solo se permite instalar.
+    if args.first().is_some_and(|c| c == "php:ext") && args.get(2).is_none_or(|a| a != "install") {
+        return Err("Solo la instalación de extensiones requiere permisos de administrador".into());
+    }
+    let out = Command::new("pkexec")
+        .arg(cheka_bin())
+        .args(&args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("No pude ejecutar pkexec: {e}"))?;
+    let mut stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    // 126/127: el usuario canceló el diálogo o no se autorizó
+    if matches!(out.status.code(), Some(126) | Some(127)) && stderr.trim().is_empty() {
+        stderr = "Se canceló la autorización".into();
+    }
+    Ok(CmdOut { ok: out.status.success(), stdout: String::from_utf8_lossy(&out.stdout).into_owned(), stderr })
+}
+
+#[derive(Clone, Serialize)]
+struct OutputLine {
+    line: String,
+    error: bool,
+}
+
+/// `cheka new …`: corre en segundo plano y envía la salida línea a línea
+/// (evento `new-output`) y el resultado al terminar (evento `new-done`).
+#[tauri::command]
+async fn new_project(app: AppHandle, args: Vec<String>) -> Result<(), String> {
+    let mut child = Command::new(cheka_bin())
+        .arg("new")
+        .args(&args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("No pude ejecutar cheka: {e}"))?;
+    let forward = |stream: Box<dyn std::io::Read + Send>, error: bool, app: AppHandle| {
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                let _ = app.emit("new-output", OutputLine { line, error });
+            }
+        })
+    };
+    let out = forward(Box::new(child.stdout.take().unwrap()), false, app.clone());
+    let err = forward(Box::new(child.stderr.take().unwrap()), true, app.clone());
+    std::thread::spawn(move || {
+        let ok = child.wait().is_ok_and(|s| s.success());
+        let _ = out.join();
+        let _ = err.join();
+        let _ = app.emit("new-done", ok);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("URL inválida".into());
+    }
+    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn open_path(app: AppHandle, path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.is_absolute() {
+        return Err("Ruta inválida".into());
+    }
+    // Para un archivo (un binario, por ejemplo) se abre la carpeta que lo contiene.
+    let target = if p.is_dir() { p } else { p.parent().unwrap_or(p) };
+    app.opener().open_path(target.display().to_string(), None::<&str>).map_err(|e| e.to_string())
+}
+
+// ------------------------------------------------------------------- bandeja ----
+
+fn tray_menu(app: &AppHandle, sites: &[(String, String)]) -> tauri::Result<Menu<Wry>> {
+    let menu = Menu::new(app)?;
+    menu.append(&MenuItem::with_id(app, "open", "Abrir panel", true, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    let list = Submenu::new(app, "Sitios", true)?;
+    if sites.is_empty() {
+        list.append(&MenuItem::new(app, "Sin sitios todavía", false, None::<&str>)?)?;
+    }
+    for (name, url) in sites {
+        list.append(&MenuItem::with_id(app, format!("site:{url}"), name, true, None::<&str>)?)?;
+    }
+    menu.append(&list)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(app, "restart", "Reiniciar servicios", true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?)?;
+    Ok(menu)
+}
+
+fn update_tray(app: &AppHandle, value: &Value) {
+    let sites: Vec<(String, String)> = value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| Some((s["name"].as_str()?.to_string(), s["url"].as_str()?.to_string())))
+        .collect();
+    let state = app.state::<TrayState>();
+    let mut current = state.0.lock().unwrap();
+    if *current == sites {
+        return;
+    }
+    if let (Some(tray), Ok(menu)) = (app.tray_by_id(TRAY_ID), tray_menu(app, &sites)) {
+        let _ = tray.set_menu(Some(menu));
+        *current = sites;
+    }
+}
+
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+fn main() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(TrayState::default())
+        .invoke_handler(tauri::generate_handler![
+            sites,
+            versions,
+            status,
+            php_info,
+            php_updates,
+            services,
+            service_logs,
+            tools,
+            tools_info,
+            install_tools,
+            read_log,
+            run,
+            link_folder,
+            run_root,
+            new_project,
+            open_url,
+            open_path
+        ])
+        .setup(|app| {
+            let handle = app.handle().clone();
+            TrayIconBuilder::with_id(TRAY_ID)
+                .icon(Image::from_bytes(include_bytes!("../icons/tray.png"))?)
+                .tooltip("cheka")
+                .menu(&tray_menu(&handle, &[])?)
+                .show_menu_on_left_click(true)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "open" => show_main(app),
+                    "quit" => app.exit(0),
+                    "restart" => {
+                        let app = app.clone();
+                        std::thread::spawn(move || {
+                            let ok = Command::new("pkexec")
+                                .arg(cheka_bin())
+                                .arg("restart")
+                                .status()
+                                .is_ok_and(|s| s.success());
+                            let _ = app.emit("services-restarted", ok);
+                        });
+                    }
+                    id => {
+                        if let Some(url) = id.strip_prefix("site:") {
+                            let _ = app.opener().open_url(url, None::<&str>);
+                        }
+                    }
+                })
+                .build(app)?;
+            // Primer llenado del menú de sitios
+            if let Ok(value) = json(&["sites", "--json"]) {
+                update_tray(&handle, &value);
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Cerrar la ventana la oculta: cheka sigue en la bandeja.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
+        .run(tauri::generate_context!())
+        .expect("no pude iniciar el panel de cheka");
+}

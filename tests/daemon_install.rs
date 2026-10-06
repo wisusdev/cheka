@@ -262,3 +262,100 @@ fn daemon_atiende_y_vigila() {
     }
     assert!(ipc::call(&socket, &Request::Ping).unwrap().ok, "el daemon debe seguir vivo");
 }
+
+/// Ajustes y extensiones por versión (solo si el equipo tiene el PHP de apt).
+#[test]
+fn ajustes_y_extensiones_de_php() {
+    let v = ["8.5", "8.4", "8.3"].into_iter().find(|v| Path::new(&format!("/usr/sbin/php-fpm{v}")).exists());
+    let Some(v) = v else {
+        eprintln!("sin PHP de apt; se omite");
+        return;
+    };
+    let env = Env::new();
+    fs::write(env.conf.join("cheka.toml"), "version = 1\n").unwrap();
+    assert_ok(&env.run(&["php:install", v]));
+    let dir = env.root.join(format!("etc/cheka/php/{v}"));
+    let system = fs::read_dir(format!("/etc/php/{v}/fpm/conf.d")).unwrap().count();
+    assert_eq!(fs::read_dir(dir.join("ext.d")).unwrap().count(), system, "ext.d refleja al sistema");
+
+    // ajustes: se guardan en cheka.toml y PHP-FPM los ve
+    assert_ok(&env.run(&["php:ini", v, "upload_max_filesize=321M"]));
+    assert!(fs::read_to_string(dir.join("conf.d/99-cheka.ini")).unwrap().contains("upload_max_filesize = 321M"));
+    let info: serde_json::Value = serde_json::from_slice(&env.run(&["php:info", v, "--json"]).stdout).unwrap();
+    let upload = info["settings"].as_array().unwrap().iter().find(|s| s["key"] == "upload_max_filesize").unwrap();
+    assert_eq!((upload["value"].as_str(), upload["custom"].as_bool()), (Some("321M"), Some(true)));
+    assert!(!env.run(&["php:ini", v, "memory_limit=1G\nextension=x.so"]).status.success());
+
+    // extensiones: desactivar una que el sistema activa, y volver a activarla
+    let ext = fs::read_dir(dir.join("ext.d")).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).find(|f| f.contains("zip")).map(|_| "zip").unwrap_or("ctype");
+    assert_ok(&env.run(&["php:ext", v, "disable", ext]));
+    let loaded = |env: &Env| -> bool {
+        let info: serde_json::Value = serde_json::from_slice(&env.run(&["php:info", v, "--json"]).stdout).unwrap();
+        info["extensions"].as_array().unwrap().iter().any(|e| e["name"] == ext && e["loaded"] == true)
+    };
+    assert!(!loaded(&env), "PHP-FPM no debe cargar {ext} tras desactivarla");
+    assert_ok(&env.run(&["php:ext", v, "enable", ext]));
+    assert!(loaded(&env));
+    assert!(!fs::read_to_string(env.conf.join("cheka.toml")).unwrap().contains(".extensions]"), "sin ajustes redundantes");
+    assert!(!env.run(&["php:ext", v, "enable", "no-existe"]).status.success());
+}
+
+/// `cheka tools install` con un catálogo de prueba (solo pasos del usuario: sin sudo).
+#[test]
+fn herramientas_con_catalogo_de_prueba() {
+    let env = Env::new();
+    let out_dir = env.base.join("salida");
+    fs::create_dir_all(&out_dir).unwrap();
+    let catalog = env.base.join("tools.toml");
+    fs::write(
+        &catalog,
+        format!(
+            r#"
+[[tool]]
+id = "base"
+name = "Base"
+category = "Prueba"
+detect = "test -f {o}/base"
+user = "echo base > {o}/base"
+
+[[tool]]
+id = "depende"
+name = "Depende de base"
+category = "Prueba"
+requires = ["base"]
+detect = "test -f {o}/depende"
+user = "test -f {o}/base && echo ok > {o}/depende"
+
+[[tool]]
+id = "rota"
+name = "Rota"
+category = "Prueba"
+detect = "false"
+user = "echo antes; false; echo nunca > {o}/nunca"
+"#,
+            o = out_dir.display()
+        ),
+    )
+    .unwrap();
+    let run = |args: &[&str]| env.cmd(args).env("CHEKA_TOOLS", &catalog).output().unwrap();
+
+    let list: serde_json::Value = serde_json::from_slice(&run(&["tools", "--json"]).stdout).unwrap();
+    assert_eq!(list.as_array().unwrap().len(), 3);
+    assert!(list.as_array().unwrap().iter().all(|t| t["installed"] == false));
+
+    // `depende` arrastra a `base` y se instalan en orden
+    let out = run(&["tools", "install", "depende"]);
+    assert_ok(&out);
+    assert_eq!(fs::read_to_string(out_dir.join("depende")).unwrap(), "ok\n");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("::cheka-tool"), "los marcadores no se muestran");
+    let list: serde_json::Value = serde_json::from_slice(&run(&["tools", "--json"]).stdout).unwrap();
+    assert_eq!(list.as_array().unwrap().iter().filter(|t| t["installed"] == true).count(), 2);
+
+    // una herramienta que falla: se detiene en el error (set -e) y el comando falla
+    let out = run(&["tools", "install", "rota"]);
+    assert!(!out.status.success());
+    assert!(!out_dir.join("nunca").exists());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Rota"));
+
+    assert!(!run(&["tools", "install", "no-existe"]).status.success());
+}

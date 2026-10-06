@@ -30,11 +30,19 @@ enum Cmd {
     },
     /// Lista sitios, tipo detectado, PHP y URL
     #[command(visible_aliases = ["links", "ls"])]
-    Sites,
+    Sites {
+        /// Salida en JSON (para scripts y la UI)
+        #[arg(long)]
+        json: bool,
+    },
     /// Carpetas aparcadas
     Paths,
     /// Versiones de PHP disponibles e instaladas
-    Versions,
+    Versions {
+        /// Salida en JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Ruta del PHP del sitio actual
     #[command(name = "which-php")]
     WhichPhp,
@@ -51,10 +59,44 @@ enum Cmd {
         args: Vec<OsString>,
     },
     /// Estado de los servicios
-    Status,
+    Status {
+        /// Salida en JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Instala (o reconfigura) una versión de PHP
     #[command(name = "php:install")]
     PhpInstall { version: String },
+    /// Detalles de una versión de PHP: ajustes y extensiones
+    #[command(name = "php:info", disable_help_flag = true)]
+    PhpInfo {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Cambia ajustes de php.ini de una versión (clave=valor)
+    #[command(name = "php:ini", disable_help_flag = true)]
+    PhpIni {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Activa, desactiva o instala extensiones (PHP de apt)
+    #[command(name = "php:ext", disable_help_flag = true)]
+    PhpExt {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Actualiza una versión de PHP a su último parche
+    #[command(name = "php:update", disable_help_flag = true)]
+    PhpUpdate {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Muestra qué versiones de PHP tienen actualización
+    #[command(name = "php:updates", disable_help_flag = true)]
+    PhpUpdates {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Pasa el estado a cheka.toml (--dry-run: solo mostrar; --legacy: volver al formato de bash)
     Migrate {
         #[arg(allow_hyphen_values = true)]
@@ -119,6 +161,24 @@ enum Cmd {
     },
     /// Daemon: vigila los sitios y atiende a la CLI (lo arranca systemd)
     Daemon,
+    /// Estado detallado de cada servicio (versión, puertos, memoria…)
+    #[command(disable_help_flag = true)]
+    Services {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Gestiona un servicio: start|stop|restart|enable|disable|logs
+    #[command(disable_help_flag = true)]
+    Service {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Herramientas de desarrollo: list | install <id>…
+    #[command(disable_help_flag = true)]
+    Tools {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Inicia los servicios
     Start,
     /// Detiene los servicios
@@ -137,16 +197,21 @@ fn run(cmd: Cmd) -> anyhow::Result<()> {
     let ctx = &mut ctx;
     match cmd {
         Cmd::Refresh { quiet } => commands::refresh(ctx, quiet),
-        Cmd::Sites => commands::sites(ctx),
+        Cmd::Sites { json } => commands::sites(ctx, json),
         Cmd::Paths => commands::paths(ctx),
-        Cmd::Versions => commands::versions(ctx),
+        Cmd::Versions { json } => commands::versions(ctx, json),
         Cmd::WhichPhp => commands::which_php(ctx),
         Cmd::Php { args } => commands::php(ctx, args),
         Cmd::Composer { args } => commands::composer(ctx, args),
-        Cmd::Status => commands::status(ctx),
+        Cmd::Status { json } => commands::status(ctx, json),
         Cmd::PhpInstall { version } => commands::php_install(ctx, &version),
         Cmd::Migrate { args } => commands::migrate(ctx, &args),
         Cmd::Fpm { version } => commands::fpm(ctx, &version),
+        Cmd::PhpInfo { args } => commands::phpcmd::info(ctx, &args),
+        Cmd::PhpIni { args } => commands::phpcmd::ini(ctx, &args),
+        Cmd::PhpExt { args } => commands::phpcmd::ext(ctx, &args),
+        Cmd::PhpUpdate { args } => commands::phpcmd::update(ctx, &args),
+        Cmd::PhpUpdates { args } => commands::phpcmd::updates(ctx, &args),
         Cmd::Park { args } => site::park(ctx, &args),
         Cmd::Forget { args } => site::forget(ctx, &args),
         Cmd::Link { args } => site::link(ctx, &args),
@@ -165,6 +230,9 @@ fn run(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Install => cheka::install::install(ctx),
         Cmd::Uninstall { args } => cheka::install::uninstall(ctx, &args),
         Cmd::Daemon => cheka::daemon::run(ctx),
+        Cmd::Services { args } => commands::service::list(ctx, &args),
+        Cmd::Service { args } => commands::service::service(ctx, &args),
+        Cmd::Tools { args } => commands::tools::tools(ctx, &args),
         Cmd::Start => commands::services(ctx, "start"),
         Cmd::Stop => commands::services(ctx, "stop"),
         Cmd::Restart => commands::services(ctx, "restart"),
