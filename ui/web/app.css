@@ -203,10 +203,20 @@ details[open] summary { margin-bottom: 10px; }
 .files li:first-child { color: var(--text); }
 
 /* ---------- servicios ---------- */
-.service-list { list-style: none; padding: 0; margin: 0; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); }
-.service-list li { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border); }
-.service-list li:last-child { border-bottom: none; }
-.service-list .state { margin-left: auto; font-size: 12.5px; color: var(--muted); }
+.cards.services { grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); margin-bottom: 16px; }
+.service-head { display: flex; align-items: center; gap: 8px; }
+.service-head h3 { margin: 0; font-size: 15px; flex: 1; }
+.state-badge { font-size: 11.5px; padding: 1px 8px; border-radius: 20px; background: var(--code-bg); color: var(--muted); }
+.state-badge.active { background: #dcf5e6; color: #0e7c3e; }
+.state-badge.failed { background: var(--bad-soft); color: var(--bad); }
+@media (prefers-color-scheme: dark) { .state-badge.active { background: #12351f; color: #5fd38d; } }
+.facts { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12.5px; margin: 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; word-break: break-all; }
+.boot { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.logs-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.logs-head h2 { margin: 0; }
+.service-logs h3 { margin: 14px 0 6px; font: 12.5px ui-monospace, "Ubuntu Mono", monospace; color: var(--muted); }
 
 /* ---------- nuevo proyecto ---------- */
 .new-form { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px 16px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }

@@ -161,6 +161,18 @@ enum Cmd {
     },
     /// Daemon: vigila los sitios y atiende a la CLI (lo arranca systemd)
     Daemon,
+    /// Estado detallado de cada servicio (versión, puertos, memoria…)
+    #[command(disable_help_flag = true)]
+    Services {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Gestiona un servicio: start|stop|restart|enable|disable|logs
+    #[command(disable_help_flag = true)]
+    Service {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Inicia los servicios
     Start,
     /// Detiene los servicios
@@ -212,6 +224,8 @@ fn run(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Install => cheka::install::install(ctx),
         Cmd::Uninstall { args } => cheka::install::uninstall(ctx, &args),
         Cmd::Daemon => cheka::daemon::run(ctx),
+        Cmd::Services { args } => commands::service::list(ctx, &args),
+        Cmd::Service { args } => commands::service::service(ctx, &args),
         Cmd::Start => commands::services(ctx, "start"),
         Cmd::Stop => commands::services(ctx, "stop"),
         Cmd::Restart => commands::services(ctx, "restart"),

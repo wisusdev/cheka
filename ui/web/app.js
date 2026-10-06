@@ -78,6 +78,7 @@ async function reload() {
   if (sites.status === "fulfilled") state.sites = sites.value;
   if (versions.status === "fulfilled") state.versions = versions.value;
   if (status.status === "fulfilled") state.status = status.value;
+  if (state.page === "services") await loadServices();
   const failed = [sites, versions, status].find((r) => r.status === "rejected");
   state.error = failed ? String(failed.reason) : null;
   render();
@@ -417,30 +418,116 @@ $("#pd-settings").addEventListener("submit", (e) => {
 
 // ------------------------------------------------------------------ servicios ----
 
-const SERVICE_NAMES = {
-  apache2: "Apache",
-  cheka: "Daemon de cheka",
-  "cheka-dns": "DNS (*.test)",
-  mariadb: "MariaDB",
-};
-
 const STATE_NAMES = { active: "activo", inactive: "detenido", failed: "con error", activating: "iniciando", deactivating: "deteniéndose" };
 
+function humanBytes(b) {
+  return b >= 1 << 30 ? `${(b / (1 << 30)).toFixed(1)} GB` : `${Math.round(b / (1 << 20))} MB`;
+}
+
+function humanDuration(s) {
+  if (s < 60) return `${s} s`;
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h ${Math.floor((s % 3600) / 60)} min`;
+  return `${Math.floor(s / 86400)} d ${Math.floor((s % 86400) / 3600)} h`;
+}
+
+/** Acción de root sobre un servicio; al terminar recarga los detalles. */
+function serviceAction(button, id, verb) {
+  return action(button, async () => {
+    const out = await runRoot("service", id, verb);
+    await loadServices();
+    return out;
+  });
+}
+
+async function loadServices() {
+  try {
+    state.services = await invoke("services");
+  } catch (e) {
+    state.error = String(e);
+  }
+  renderServices();
+}
+
 function renderServices() {
-  const st = state.status;
-  if (!st || !changed("services", st)) return;
-  $("#service-list").replaceChildren(
-    ...st.services.map((s) => {
-      const php = s.name.match(/^cheka-php@(.+)\.service$/);
-      const label = php ? `PHP-FPM ${php[1]}` : SERVICE_NAMES[s.name] ?? s.name;
-      return h("li", {}, h("span", { class: "dot " + (s.state === "active" ? "ok" : "bad") }), label, h("span", { class: "state" }, STATE_NAMES[s.state] ?? s.state));
-    }),
-    h("li", {}, h("span", { class: "dot " + (st.dns ? "ok" : "bad") }), "Resolución de *.test", h("span", { class: "state" }, st.dns ? `→ ${st.dns}` : "no resuelve"))
+  const list = state.services;
+  if (!list || !changed("services", list.map(({ uptime_secs, memory_bytes, ...rest }) => rest))) {
+    // Tiempo activo y memoria cambian siempre: se actualizan sin redibujar las tarjetas.
+    for (const s of list ?? []) {
+      const el = document.querySelector(`[data-service="${CSS.escape(s.id)}"]`);
+      if (!el) continue;
+      el.querySelector(".uptime")?.replaceChildren(s.uptime_secs != null ? `hace ${humanDuration(s.uptime_secs)}` : "—");
+      el.querySelector(".memory")?.replaceChildren(s.memory_bytes != null ? humanBytes(s.memory_bytes) : "—");
+    }
+    return;
+  }
+  $("#service-cards").replaceChildren(
+    ...list.map((s) => {
+      const active = s.state === "active";
+      const boot = h("input", { type: "checkbox", "aria-label": `${s.label}: iniciar con el sistema` });
+      boot.checked = s.enabled;
+      boot.addEventListener("change", () => serviceAction(boot, s.id, boot.checked ? "enable" : "disable"));
+      const buttons = active
+        ? [h("button", { class: "btn small", onclick: (e) => serviceAction(e.currentTarget, s.id, "restart") }, "Reiniciar"),
+           h("button", { class: "btn small danger", onclick: (e) => serviceAction(e.currentTarget, s.id, "stop") }, "Detener")]
+        : [h("button", { class: "btn small primary", onclick: (e) => serviceAction(e.currentTarget, s.id, "start") }, "Iniciar")];
+      buttons.push(h("button", { class: "btn small", onclick: () => showServiceLogs(s) }, "Logs"));
+      if (s.config) buttons.push(h("button", { class: "btn small", title: s.config, onclick: () => invoke("open_path", { path: s.config }).catch((e) => toast(String(e), true)) }, "Configuración"));
+      return h("div", { class: "card", "data-service": s.id },
+        h("div", { class: "service-head" },
+          h("span", { class: "dot " + (active ? "ok" : "bad") }),
+          h("h3", {}, s.label),
+          h("span", { class: `state-badge ${s.state}` }, STATE_NAMES[s.state] ?? s.state)),
+        h("dl", { class: "facts" },
+          h("dt", {}, "Versión"), h("dd", {}, s.version ?? "—"),
+          h("dt", {}, "Escucha"), h("dd", {}, s.listen.join(", ") || "—"),
+          h("dt", {}, "Activo"), h("dd", { class: "uptime" }, s.uptime_secs != null ? `hace ${humanDuration(s.uptime_secs)}` : "—"),
+          h("dt", {}, "Memoria"), h("dd", { class: "memory" }, s.memory_bytes != null ? humanBytes(s.memory_bytes) : "—"),
+          h("dt", {}, "PID"), h("dd", {}, s.pid ?? "—")),
+        h("label", { class: "boot" }, h("span", { class: "switch" }, boot, h("span")), "Iniciar con el sistema"),
+        h("div", { class: "actions" }, buttons));
+    })
   );
 }
 
+// ---------- logs de un servicio ----------
+
+state.logService = null;
+
+async function showServiceLogs(service) {
+  state.logService = service;
+  $("#service-logs").classList.remove("hidden");
+  $("#service-logs-title").textContent = `Logs de ${service.label}`;
+  $("#service-logs-body").replaceChildren(h("p", { class: "muted" }, "Cargando…"));
+  $("#service-logs").scrollIntoView({ behavior: "smooth", block: "start" });
+  try {
+    const logs = await invoke("service_logs", { id: service.id });
+    const block = (title, lines) => [
+      h("h3", {}, title),
+      h("pre", { class: "console" }, lines.length ? lines.join("\n") : "(vacío)"),
+    ];
+    $("#service-logs-body").replaceChildren(
+      ...block("journal de systemd", logs.journal),
+      ...logs.files.flatMap((f) => block(f.file, f.lines))
+    );
+    for (const pre of $("#service-logs-body").querySelectorAll("pre")) pre.scrollTop = pre.scrollHeight;
+  } catch (e) {
+    $("#service-logs-body").replaceChildren(h("p", { class: "muted" }, String(e)));
+  }
+}
+$("#service-logs-refresh").addEventListener("click", () => state.logService && showServiceLogs(state.logService));
+$("#service-logs-close").addEventListener("click", () => {
+  state.logService = null;
+  $("#service-logs").classList.add("hidden");
+});
+
 for (const btn of document.querySelectorAll("[data-root]")) {
-  btn.addEventListener("click", () => action(btn, () => runRoot(btn.dataset.root)));
+  btn.addEventListener("click", () =>
+    action(btn, async () => {
+      const out = await runRoot(btn.dataset.root);
+      await loadServices();
+      return out;
+    }));
 }
 
 // ------------------------------------------------------------------ nuevo proyecto ----
@@ -568,6 +655,7 @@ function showPage(page) {
   for (const el of document.querySelectorAll(".nav-item")) el.classList.toggle("active", el.dataset.page === page);
   for (const el of document.querySelectorAll(".page")) el.classList.toggle("active", el.id === `page-${page}`);
   if (page === "logs") loadLogs();
+  if (page === "services") loadServices();
   if (page === "php") {
     if (state.phpDetail) loadPhpDetail();
     if (!Object.keys(state.updates).length) checkUpdates();

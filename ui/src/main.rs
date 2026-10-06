@@ -22,7 +22,7 @@ const USER_COMMANDS: &[&str] = &[
     "php:ini", "php:ext",
 ];
 /// Comandos que requieren root (vía pkexec).
-const ROOT_COMMANDS: &[&str] = &["start", "stop", "restart", "php:install", "php:update", "php:ext"];
+const ROOT_COMMANDS: &[&str] = &["start", "stop", "restart", "php:install", "php:update", "php:ext", "service"];
 const LOG_DIR: &str = "/var/log/cheka";
 const TRAY_ID: &str = "cheka";
 
@@ -111,6 +111,21 @@ async fn php_info(version: String) -> Result<Value, String> {
     json(&["php:info", &version, "--json"])
 }
 
+/// Detalles de cada servicio (versión, puertos, memoria…).
+#[tauri::command]
+async fn services() -> Result<Value, String> {
+    json(&["services", "--json"])
+}
+
+/// Journal y archivos de log de un servicio.
+#[tauri::command]
+async fn service_logs(id: String) -> Result<Value, String> {
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '@' | '.')) {
+        return Err("Servicio inválido".into());
+    }
+    json(&["service", &id, "logs", "--json"])
+}
+
 /// Versiones instaladas con actualización disponible (consulta la red).
 #[tauri::command]
 async fn php_updates() -> Result<Value, String> {
@@ -171,6 +186,12 @@ async fn link_folder(path: String, name: String) -> Result<CmdOut, String> {
 #[tauri::command]
 async fn run_root(args: Vec<String>) -> Result<CmdOut, String> {
     allowed(&args, ROOT_COMMANDS)?;
+    // De `service`, como root solo las acciones (los logs se leen como el usuario).
+    if args.first().is_some_and(|c| c == "service")
+        && !args.get(2).is_some_and(|a| ["start", "stop", "restart", "enable", "disable"].contains(&a.as_str()))
+    {
+        return Err("Acción de servicio no permitida".into());
+    }
     // De php:ext, como root solo se permite instalar.
     if args.first().is_some_and(|c| c == "php:ext") && args.get(2).is_none_or(|a| a != "install") {
         return Err("Solo la instalación de extensiones requiere permisos de administrador".into());
@@ -297,6 +318,8 @@ fn main() {
             status,
             php_info,
             php_updates,
+            services,
+            service_logs,
             read_log,
             run,
             link_folder,

@@ -120,15 +120,26 @@
       <header class="page-head">
         <div>
           <h1>Servicios</h1>
-          <p class="muted">Apache, PHP-FPM, MariaDB, DNS y el daemon de cheka.</p>
+          <p class="muted">Gestiona cada servicio por separado. Iniciar, detener o reiniciar pide tu contraseña.</p>
         </div>
         <div class="head-actions">
+          <span class="muted small">Todos:</span>
           <button class="btn" data-root="start">Iniciar</button>
           <button class="btn" data-root="stop">Detener</button>
-          <button class="btn primary" data-root="restart">Reiniciar</button>
+          <button class="btn" data-root="restart">Reiniciar</button>
         </div>
       </header>
-      <ul class="service-list" id="service-list"></ul>
+      <div class="cards services" id="service-cards"></div>
+      <section class="panel service-logs hidden" id="service-logs">
+        <div class="logs-head">
+          <h2 id="service-logs-title"></h2>
+          <div class="head-actions">
+            <button class="btn small" id="service-logs-refresh">Actualizar</button>
+            <button class="btn small ghost" id="service-logs-close">Cerrar</button>
+          </div>
+        </div>
+        <div id="service-logs-body"></div>
+      </section>
     </section>
 
     <!-- Nuevo proyecto -->
