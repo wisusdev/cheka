@@ -1,0 +1,26 @@
+; Generado por cheka — no editar (se sobrescribe). Ajustes propios: cheka php:ini
+; PHP en Windows lee este archivo porque está junto a php.exe y php-cgi.exe.
+extension_dir = "{{ ext_dir }}"
+{% for ext in extensions %}
+extension={{ ext }}
+{% endfor %}
+{% if opcache %}
+zend_extension=opcache
+{% endif %}
+memory_limit = 512M
+upload_max_filesize = 256M
+post_max_size = 256M
+max_execution_time = 300
+max_input_time = 300
+max_input_vars = 5000
+display_errors = On
+display_startup_errors = On
+error_reporting = E_ALL
+log_errors = On
+error_log = "{{ log_dir }}/php-{{ v }}-errors.log"
+date.timezone = {{ tz }}
+curl.cainfo = "{{ cacert }}"
+openssl.cafile = "{{ cacert }}"
+opcache.enable = 1
+opcache.validate_timestamps = 1
+opcache.revalidate_freq = 0

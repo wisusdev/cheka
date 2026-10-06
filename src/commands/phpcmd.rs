@@ -4,6 +4,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Result, bail};
 
+#[cfg(unix)]
 use super::download_static_php;
 use crate::phpconf::{self, is_apt};
 use crate::{Ctx, php, refresh, ui};
@@ -32,9 +33,15 @@ pub fn info(ctx: &Ctx, args: &[String]) -> Result<()> {
         return print_json(&d);
     }
     let c = ui::colors();
-    let origin = if d.source == "apt" { "paquete del sistema" } else { "binario estático" };
+    let (origin, server) = if cfg!(windows) {
+        ("zip de windows.php.net", "CGI:")
+    } else if d.source == "apt" {
+        ("paquete del sistema", "FPM:")
+    } else {
+        ("binario estático", "FPM:")
+    };
     println!("{}PHP {}{} ({origin})", c.bold, d.full_version, c.reset);
-    println!("  FPM:     {}", d.fpm_bin);
+    println!("  {server:<8} {}", d.fpm_bin);
     println!("  CLI:     {}", d.cli_bin);
     println!("  php.ini: {}", d.ini_file);
     println!("\n{}Ajustes{}", c.bold, c.reset);
@@ -105,6 +112,9 @@ pub fn ext(ctx: &mut Ctx, args: &[String]) -> Result<()> {
     if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') || name.is_empty() {
         bail!("Nombre de extensión inválido: '{name}'");
     }
+    if cfg!(windows) {
+        bail!("En Windows cheka todavía no gestiona extensiones de PHP: activa las más comunes al instalar cada versión");
+    }
     if !is_apt(&v) {
         bail!(
             "PHP {v} es un binario estático: sus extensiones vienen compiladas y no se pueden cambiar. \
@@ -150,6 +160,9 @@ pub fn update(ctx: &mut Ctx, args: &[String]) -> Result<()> {
         bail!("PHP {v} no está instalado (instálalo con: cheka php:install {v})");
     }
     ctx.ensure_root()?;
+    #[cfg(windows)]
+    return update_windows(ctx, &v);
+    #[cfg(unix)]
     if is_apt(&v) {
         let out = Command::new("dpkg-query").args(["-W", "-f=${Package}\\n", &format!("php{v}-*")]).output()?;
         let pkgs: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect();
@@ -174,8 +187,28 @@ pub fn update(ctx: &mut Ctx, args: &[String]) -> Result<()> {
             None => bail!("No pude consultar las versiones publicadas de PHP {v}"),
         }
     }
-    ctx.sys.restart(&php::unit(&v))?;
-    ui::ok(format!("PHP {v} actualizado y reiniciado"));
+    #[cfg(unix)]
+    {
+        ctx.sys.restart(&php::unit(&v))?;
+        ui::ok(format!("PHP {v} actualizado y reiniciado"));
+        Ok(())
+    }
+}
+
+/// Windows: descarga el último parche de windows.php.net (detiene Apache mientras
+/// reemplaza los archivos, porque Windows no deja renombrar un php-cgi.exe en uso).
+#[cfg(windows)]
+fn update_windows(ctx: &Ctx, v: &str) -> Result<()> {
+    use crate::windows_setup::{download_php, php_installed_version, php_latest};
+    let current = php_installed_version(&ctx.layout, v).unwrap_or_default();
+    match php_latest()?.get(v) {
+        Some(rel) if rel.full != current => {
+            let full = download_php(ctx, v)?;
+            ui::ok(format!("PHP {v}: {current} → {full}"));
+        }
+        Some(_) => ui::info(format!("PHP {v} ya está en la última versión ({current})")),
+        None => bail!("No pude consultar las versiones publicadas de PHP {v}"),
+    }
     Ok(())
 }
 

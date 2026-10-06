@@ -29,6 +29,8 @@ pub mod tools;
 pub mod ui;
 pub mod userfs;
 pub mod util;
+#[cfg(windows)]
+pub mod windows_setup;
 
 use std::fmt;
 use std::path::PathBuf;

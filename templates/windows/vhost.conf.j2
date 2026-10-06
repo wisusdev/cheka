@@ -1,0 +1,16 @@
+# Generado por cheka — no editar. Sitio: {{ name }} ({{ kind }}, PHP {{ php }})
+<VirtualHost *:80>
+{% include "windows/vhost-body.j2" %}
+{% if secure %}
+    RewriteEngine On
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=302,L]
+{% endif %}
+</VirtualHost>
+{% if secure %}
+<VirtualHost *:443>
+{% include "windows/vhost-body.j2" %}
+    SSLEngine on
+    SSLCertificateFile "{{ cert }}"
+    SSLCertificateKeyFile "{{ key }}"
+</VirtualHost>
+{% endif %}

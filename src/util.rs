@@ -28,6 +28,16 @@ pub fn which(name: impl AsRef<OsStr>) -> Option<PathBuf> {
         .find(|c| c.is_file() && is_executable(c))
 }
 
+/// Busca un archivo (no necesariamente ejecutable) en las carpetas del PATH.
+pub fn find_in_path(name: impl AsRef<OsStr>) -> Option<PathBuf> {
+    let name = name.as_ref();
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .map(|d| d.join(name))
+        .find(|c| c.is_file())
+}
+
 pub fn write_mode(path: &Path, contents: &str, mode: u32) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("No pude escribir {}", path.display()))?;
     crate::platform::set_mode(path, mode)?;

@@ -291,8 +291,8 @@ Cada componente de Linux y su equivalente en las otras plataformas.
 
 | Componente | Linux (actual) | macOS | Windows |
 |---|---|---|---|
-| **Servidor web** | Apache del sistema (apt) | Homebrew `httpd`, corriendo como LaunchDaemon (root) para usar el puerto 80, con `User`/`Group` = el usuario | [Apache Lounge](https://www.apachelounge.com) (zip, VS17), instalado como servicio con `httpd -k install` |
-| **Ejecutar PHP** | PHP-FPM por versión, socket Unix | PHP-FPM por versión, socket Unix (igual que Linux) | **No hay FPM.** `mod_fcgid` (incluido en Apache Lounge) con `FcgidWrapper "C:/…/php-cgi.exe" .php` por vhost. Evita `php-cgi -b`, que atiende una sola petición a la vez. |
+| **Servidor web** | Apache del sistema (apt) | Homebrew `httpd`, corriendo como LaunchDaemon (root) para usar el puerto 80, con `User`/`Group` = el usuario | [Apache Lounge](https://www.apachelounge.com) (zip, VS18 desde 2026; sha256 en el `.zip.txt` publicado), instalado como servicio con `httpd -k install` **(verificado)** |
+| **Ejecutar PHP** | PHP-FPM por versión, socket Unix | PHP-FPM por versión, socket Unix (igual que Linux) | **No hay FPM.** `mod_fcgid` (zip aparte en Apache Lounge) con `FcgidWrapper "C:/…/php-cgi.exe" .php` por vhost. Evita `php-cgi -b`, que atiende una sola petición a la vez. |
 | **Binarios de PHP** | apt (versión del sistema) + static-php-cli `bulk` linux (8.0–8.5) | static-php-cli `bulk`: fpm + cli 8.0–8.5, x86_64 y aarch64 **(verificado)**. Para 7.4: tap `shivammathur/php` de Homebrew **(verificar)** | Zips NTS oficiales de windows.php.net. Hay un índice `releases.json` con rutas y sha256, de **7.4 a 8.5** **(verificado)**. static-php-cli solo tiene `cli`/`micro` para Windows, sin fpm ni cgi **(verificado)**. |
 | **DNS `*.test`** | dnsmasq :5300 + configuración de systemd-resolved (`~test`) | `/etc/resolver/test` con `nameserver 127.0.0.1` y `port 5300` + dnsmasq de Homebrew o un DNS integrado. Es el método de Valet. | No hay resolver por sufijo como en macOS. **Opción A:** cheka administra el archivo `hosts` (sin comodines, así que cada subsitio de Multisite necesita su propia entrada). **Opción B:** regla NRPT (`Add-DnsClientNrptRule -Namespace ".test" -NameServers 127.0.0.1`) + un DNS integrado en el puerto 53 **(verificar en Windows Home)**. |
 | **Servicios** | systemd (`.service`, `.path`, `.timer`) | launchd: plists en `/Library/LaunchDaemons`. `WatchPaths` equivale a `.path`; `StartInterval`, a `.timer`. | Servicio de Windows (el daemon de cheka); Apache y MariaDB ya se instalan como servicios. |
@@ -530,10 +530,19 @@ password = "secret"
      comandos de lectura y los que cambian el estado (`park`, `link`, `isolate`…). `install`,
      `php:install` y `daemon` avisan que aún no existen; `tests/parity.rs` y
      `tests/daemon_install.rs` son solo de Unix.
-   - **3.2** `php:install` (zips NTS + `releases.json` + sha256), Apache Lounge y plantilla de
-     vhost con `mod_fcgid` (rutas con `/`), `refresh` real.
-   - **3.3** `install`/`uninstall`, servicio de Windows + named pipe, archivo `hosts`, mkcert,
-     MariaDB.
+   - **3.2 ✅** `src/windows_setup.rs`: `php:install`/`php:update`/`php:updates` con los zips
+     NTS de `releases.json` (sha256 verificado), Apache Lounge + `mod_fcgid` (sha256 del
+     `.zip.txt`) y `install`/`uninstall` parciales: runtime de Visual C++ (winget), binario en
+     `%ProgramData%\cheka\bin` (agregado al PATH del sistema), PHP por defecto y el servicio
+     `cheka-apache`. Plantillas en `templates/windows/` (`FcgidWrapper` por vhost, rutas con `/`,
+     vhost de `localhost` primero). **Decisión:** el php.ini va junto a `php.exe`/`php-cgi.exe`
+     (PHP en Windows lo busca ahí), con los ajustes de `[php."X.Y"]` al final; así la CLI y
+     Apache comparten configuración sin wrappers ni `PHP_INI_SCAN_DIR`. mod_fcgid arranca
+     php-cgi con el entorno vacío: `cheka.conf` le pasa `SystemRoot`, `PATH` y `TEMP`. Las
+     extensiones comunes se activan solas; `php:ext` aún no aplica en Windows. Probado con
+     Apache en primer plano (modo prefijo): dos versiones a la vez, PATH_INFO, estáticos, 404,
+     subdominios, docroot de Laravel, comodín, `localhost`, HTTPS saliente y `php:ini`.
+   - **3.3** Servicio de Windows + named pipe (daemon), archivo `hosts`, mkcert, MariaDB.
 4. **UI de bandeja (estilo PHP Monitor)** — en curso, crate `ui/` (`cheka-ui`, Tauri v2,
    interfaz en HTML/CSS/JS sin frameworks). Ventana con sitios (abrir, HTTPS, versión de PHP,
    carpeta, logs, enlazar carpetas), versiones de PHP, servicios, asistente de `new` con la

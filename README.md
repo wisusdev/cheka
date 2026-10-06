@@ -14,9 +14,10 @@ versión de PHP que elijas por proyecto, MariaDB y HTTPS local.
 > las pruebas de paridad. Para la arquitectura interna y el plan para macOS y Windows,
 > consulta [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).
 >
-> **Windows (en desarrollo):** cheka compila y ya gestiona el estado (`sites`, `park`, `link`,
-> `isolate`…), pero todavía no instala Apache, PHP ni el servicio. El avance está en el
-> hito 3 de `docs/ARQUITECTURA.md` §8.6.
+> **Windows (en desarrollo):** `cheka install` (como administrador) descarga Apache Lounge con
+> `mod_fcgid` y PHP de windows.php.net, y publica los sitios con la versión de PHP de cada uno.
+> Todavía faltan el DNS automático de `*.test` (por ahora, agrega cada sitio al archivo
+> `hosts`), HTTPS, MariaDB y el daemon. El avance está en el hito 3 de `docs/ARQUITECTURA.md` §8.6.
 
 ---
 

@@ -68,6 +68,14 @@ pub fn apt_cli(v: &str) -> PathBuf {
     PathBuf::from(format!("/usr/bin/php{v}"))
 }
 
+/// El php.ini de cheka para esta versión (en Windows va junto a los binarios).
+pub fn ini_file(layout: &Layout, v: &str) -> PathBuf {
+    #[cfg(windows)]
+    return crate::windows_setup::php_ini_path(layout, v);
+    #[cfg(unix)]
+    config_dir(layout, v).join("php.ini")
+}
+
 pub fn installed(layout: &Layout, v: &str) -> bool {
     is_executable(&fpm_bin(layout, v))
 }

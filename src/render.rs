@@ -31,6 +31,11 @@ fn env() -> &'static Environment<'static> {
             ("linux/apache-conf.conf.j2", include_str!("../templates/linux/apache-conf.conf.j2")),
             ("linux/apache-site.conf.j2", include_str!("../templates/linux/apache-site.conf.j2")),
             ("linux/envvars-block.j2", include_str!("../templates/linux/envvars-block.j2")),
+            ("windows/vhost.conf.j2", include_str!("../templates/windows/vhost.conf.j2")),
+            ("windows/vhost-body.j2", include_str!("../templates/windows/vhost-body.j2")),
+            ("windows/php.ini.j2", include_str!("../templates/windows/php.ini.j2")),
+            ("windows/apache-conf.conf.j2", include_str!("../templates/windows/apache-conf.conf.j2")),
+            ("windows/apache-site.conf.j2", include_str!("../templates/windows/apache-site.conf.j2")),
         ] {
             env.add_template(name, src).expect("plantilla inválida");
         }
@@ -66,6 +71,7 @@ pub struct Vhost<'a> {
     pub tls: Option<(&'a Path, &'a Path)>,
 }
 
+#[cfg(unix)]
 pub fn vhost(layout: &Layout, v: &Vhost) -> String {
     let (cert, key) = v.tls.map(|(c, k)| (c.display().to_string(), k.display().to_string())).unzip();
     render(
@@ -84,6 +90,68 @@ pub fn vhost(layout: &Layout, v: &Vhost) -> String {
             key => key.unwrap_or_default(),
         },
     )
+}
+
+/// Windows: PHP con `mod_fcgid` (`FcgidWrapper` al `php-cgi.exe` de la versión del sitio).
+#[cfg(windows)]
+pub fn vhost(layout: &Layout, v: &Vhost) -> String {
+    let (cert, key) = v.tls.map(|(c, k)| (slash(c), slash(k))).unzip();
+    render(
+        "windows/vhost.conf.j2",
+        context! {
+            name => v.name,
+            tld => TLD,
+            kind => v.kind,
+            php => v.php,
+            path => slash(v.path),
+            docroot => slash(v.docroot),
+            php_cgi => slash(&php::fpm_bin(layout, v.php)),
+            log_dir => slash(&layout.log_dir),
+            secure => v.tls.is_some(),
+            cert => cert.unwrap_or_default(),
+            key => key.unwrap_or_default(),
+        },
+    )
+}
+
+/// Apache en Windows prefiere `/` (la `\` escapa dentro de comillas).
+pub fn slash(p: &Path) -> String {
+    p.display().to_string().replace('\\', "/")
+}
+
+/// php.ini de una versión en Windows (va junto a `php.exe`; ver `windows_setup`).
+pub struct WindowsPhpIni<'a> {
+    pub v: &'a str,
+    pub ext_dir: &'a Path,
+    pub extensions: &'a [String],
+    pub opcache: bool,
+    pub cacert: &'a Path,
+    pub tz: &'a str,
+}
+
+pub fn windows_php_ini(layout: &Layout, ini: &WindowsPhpIni) -> String {
+    render(
+        "windows/php.ini.j2",
+        context! {
+            v => ini.v,
+            ext_dir => slash(ini.ext_dir),
+            extensions => ini.extensions,
+            opcache => ini.opcache,
+            cacert => slash(ini.cacert),
+            tz => ini.tz,
+            log_dir => slash(&layout.log_dir),
+        },
+    )
+}
+
+/// `cheka.conf` de Apache en Windows: mod_fcgid y el entorno que reciben los php-cgi.
+pub fn windows_apache_conf(env: &[(String, String)]) -> String {
+    render("windows/apache-conf.conf.j2", context! { env })
+}
+
+/// `cheka-sites.conf`: incluye los vhosts y el comodín para dominios desconocidos.
+pub fn windows_apache_site(layout: &Layout) -> String {
+    render("windows/apache-site.conf.j2", context! { apache_sites => slash(&layout.apache_sites), tld => TLD })
 }
 
 pub fn php_fpm_conf(layout: &Layout, v: &str, user: &str, group: &str) -> String {

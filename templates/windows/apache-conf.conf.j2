@@ -1,0 +1,17 @@
+# Generado por cheka
+ServerName localhost
+LoadModule fcgid_module modules/mod_fcgid.so
+
+# PHP con mod_fcgid (Windows no tiene PHP-FPM). mod_fcgid arranca php-cgi.exe con un
+# entorno vacío: sin SystemRoot ni TEMP fallan OpenSSL, cURL y las subidas de archivos.
+FcgidIOTimeout 600
+FcgidBusyTimeout 600
+FcgidConnectTimeout 20
+FcgidMaxRequestLen 268435456
+FcgidMaxRequestsPerProcess 1000
+FcgidMaxProcessesPerClass 10
+FcgidIdleTimeout 300
+FcgidInitialEnv PHP_FCGI_MAX_REQUESTS 1000
+{% for key, value in env %}
+FcgidInitialEnv {{ key }} "{{ value }}"
+{% endfor %}
