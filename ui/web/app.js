@@ -709,9 +709,16 @@ function selectedTools() {
 function updateToolsButton() {
   const n = selectedTools().length;
   const btn = $("#tools-install");
-  btn.disabled = n === 0 || state.installingTools;
-  btn.textContent = state.installingTools ? "Instalando…" : n ? `Instalar seleccionadas (${n})` : "Instalar seleccionadas";
+  // Solo se muestra si hay algo marcado (o mientras instala).
+  btn.classList.toggle("hidden", n === 0 && !state.installingTools);
+  btn.disabled = state.installingTools;
+  btn.textContent = state.installingTools ? "Instalando…" : `Instalar seleccionadas (${n})`;
 }
+
+function showToolsOutput(show) {
+  $("#tools-output").classList.toggle("hidden", !show);
+}
+$("#tools-output-close").addEventListener("click", () => showToolsOutput(false));
 
 function renderTools() {
   const tools = state.tools ?? [];
@@ -756,7 +763,9 @@ $("#tools-install").addEventListener("click", async () => {
   renderTools();
   const consoleEl = $("#tools-console");
   consoleEl.replaceChildren();
-  consoleEl.classList.remove("hidden");
+  $("#tools-output-title").textContent = "Instalando…";
+  $("#tools-output-close").classList.add("hidden");
+  showToolsOutput(true);
   try {
     await invoke("install_tools", { ids });
   } catch (e) {
@@ -777,6 +786,14 @@ listen("tools-done", ({ payload }) => {
   const names = (ids) => ids.map((id) => state.tools?.find((t) => t.id === id)?.name ?? id).join(", ");
   if (payload.failed.length) toast(`Con errores: ${names(payload.failed)}. Revisa la salida.`, true);
   if (payload.ok.length) toast(`Instalado: ${names(payload.ok)}. Abre una terminal nueva para cargar el PATH.`);
+  $("#tools-output-close").classList.remove("hidden");
+  if (payload.failed.length) {
+    // Con errores, la salida se queda para poder leerla.
+    $("#tools-output-title").textContent = `Con errores: ${names(payload.failed)}`;
+  } else {
+    $("#tools-output-title").textContent = "Instalación terminada";
+    setTimeout(() => { if (!state.installingTools) showToolsOutput(false); }, 2500);
+  }
   for (const box of document.querySelectorAll("#tools-list input")) box.checked = false;
   for (const id of [...payload.ok, ...payload.failed]) delete state.toolInfo[id]; // versión nueva
   loadTools();

@@ -210,11 +210,17 @@
           <p class="muted">Navegadores, editores, lenguajes y bases de datos. Pide tu contraseña una sola vez si hace falta.</p>
         </div>
         <div class="head-actions">
-          <button class="btn primary" id="tools-install" disabled>Instalar seleccionadas</button>
+          <button class="btn primary hidden" id="tools-install">Instalar seleccionadas</button>
         </div>
       </header>
       <div id="tools-list"></div>
-      <pre class="console hidden" id="tools-console" aria-live="polite"></pre>
+      <div class="hidden" id="tools-output">
+        <div class="logs-head">
+          <h2 id="tools-output-title">Instalando…</h2>
+          <button class="btn small ghost" id="tools-output-close">Cerrar</button>
+        </div>
+        <pre class="console" id="tools-console" aria-live="polite"></pre>
+      </div>
     </section>
   </main>
 

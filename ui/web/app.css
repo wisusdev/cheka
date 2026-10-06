@@ -213,7 +213,7 @@ details[open] summary { margin-bottom: 10px; }
 .tool .desc { font-size: 12px; color: var(--muted); }
 .badge.ok { background: #dcf5e6; color: #0e7c3e; }
 @media (prefers-color-scheme: dark) { .badge.ok { background: #12351f; color: #5fd38d; } }
-#tools-console { margin-top: 8px; }
+#tools-output { margin-top: 8px; }
 .tool > div { flex: 1; min-width: 0; }
 .tool .meta { font-size: 12px; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool .ver { font: 12px ui-monospace, "Ubuntu Mono", monospace; color: var(--text); }
