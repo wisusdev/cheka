@@ -2,14 +2,23 @@
 //! que el futuro daemon y la UI de bandeja reutilicen la misma lógica.
 
 pub mod commands;
+#[cfg(unix)]
+pub mod daemon;
+#[cfg(windows)]
+#[path = "daemon_windows.rs"]
 pub mod daemon;
 pub mod detect;
 pub mod identity;
+#[cfg(unix)]
+pub mod install;
+#[cfg(windows)]
+#[path = "install_windows.rs"]
 pub mod install;
 pub mod ipc;
 pub mod layout;
 pub mod php;
 pub mod phpconf;
+pub mod platform;
 pub mod refresh;
 pub mod render;
 pub mod report;
@@ -22,7 +31,6 @@ pub mod userfs;
 pub mod util;
 
 use std::fmt;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -39,7 +47,6 @@ impl fmt::Display for Reported {
 }
 
 impl std::error::Error for Reported {}
-use nix::unistd::geteuid;
 
 use identity::Identity;
 use layout::Layout;
@@ -59,13 +66,21 @@ impl Ctx {
         let layout = Layout::from_env();
         let id = Identity::resolve(&layout)?;
         let state = State::load(&id.conf)?;
-        let sys: Box<dyn System> = if layout.is_test() { Box::new(system::Inert) } else { Box::new(system::Systemd) };
+        let sys: Box<dyn System> = if layout.is_test() {
+            Box::new(system::Inert)
+        } else {
+            #[cfg(unix)]
+            let real = system::Systemd;
+            #[cfg(windows)]
+            let real = system::WindowsServices::new(&layout);
+            Box::new(real)
+        };
         Ok(Self { layout, id, state, sys })
     }
 
     /// Root de verdad, o modo prueba (que nunca necesita privilegios).
     pub fn is_root(&self) -> bool {
-        geteuid().is_root() || self.layout.is_test()
+        platform::is_root() || self.layout.is_test()
     }
 
     /// Relee el estado del usuario después de modificarlo.
@@ -89,7 +104,7 @@ impl Ctx {
         let status = if self.is_root() {
             Command::new(exe).args(args).status()?
         } else {
-            Command::new("sudo").arg("--").arg(exe).args(args).status()?
+            platform::elevate_command(&exe)?.args(args).status()?
         };
         if !status.success() {
             return Err(Reported.into());
@@ -103,7 +118,7 @@ impl Ctx {
             return Ok(());
         }
         let exe = std::env::current_exe()?;
-        let err = Command::new("sudo").arg("--").arg(exe).args(std::env::args_os().skip(1)).exec();
+        let err = platform::exec(platform::elevate_command(&exe)?.args(std::env::args_os().skip(1)));
         Err(anyhow!("No pude ejecutar sudo: {err}"))
     }
 }

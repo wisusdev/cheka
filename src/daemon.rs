@@ -92,7 +92,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     let listener = UnixListener::bind(&socket).with_context(|| format!("No pude abrir {}", socket.display()))?;
     // Cualquiera puede conectar; la autorización se hace con SO_PEERCRED en `handle`.
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o666))?;
-    let allowed_uid = ctx.id.uid.as_raw();
+    let allowed_uid = ctx.id.uid;
     let lock = Arc::new(Mutex::new(()));
     println!("cheka daemon escuchando en {} (usuario: {})", socket.display(), ctx.id.user);
 

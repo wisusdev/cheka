@@ -2,19 +2,19 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, anyhow};
-use nix::unistd::{Gid, Group, Uid, User, geteuid};
+use anyhow::Result;
 
 use crate::layout::Layout;
+use crate::platform;
 
 #[derive(Debug, Clone)]
 pub struct Identity {
     pub user: String,
-    pub uid: Uid,
-    pub gid: Gid,
+    pub uid: u32,
+    pub gid: u32,
     pub group: String,
     pub home: PathBuf,
-    /// `~/.config/cheka` (o `CHEKA_CONF`).
+    /// `~/.config/cheka`, `%APPDATA%\cheka` en Windows (o `CHEKA_CONF`).
     pub conf: PathBuf,
     pub wpcli: PathBuf,
 }
@@ -27,7 +27,7 @@ impl Identity {
     /// Misma prioridad que bash: CHEKA_USER → SUDO_USER (si somos root) →
     /// /etc/cheka/user (si somos root, p. ej. desde un servicio) → usuario actual.
     pub fn resolve(layout: &Layout) -> Result<Self> {
-        let root = geteuid().is_root();
+        let root = platform::is_root();
         let user_file = layout.etc.join("user");
         let name = if let Some(u) = env_nonempty("CHEKA_USER") {
             u
@@ -36,24 +36,19 @@ impl Identity {
         } else if root && user_file.is_file() {
             std::fs::read_to_string(&user_file)?.trim_end_matches('\n').to_string()
         } else {
-            User::from_uid(geteuid())?
-                .ok_or_else(|| anyhow!("No encuentro el usuario actual"))?
-                .name
+            platform::current_user_name()?
         };
-        let user = User::from_name(&name)?.ok_or_else(|| anyhow!("No existe el usuario '{name}'"))?;
-        let group = Group::from_gid(user.gid)?
-            .map(|g| g.name)
-            .with_context(|| format!("No encuentro el grupo de '{name}'"))?;
-        let home = user.dir;
+        let user = platform::user_info(&name)?;
+        let home = user.home;
         let conf = env_nonempty("CHEKA_CONF")
             .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".config/cheka"));
+            .unwrap_or_else(|| platform::user_conf_dir(&home));
         Ok(Self {
             wpcli: home.join(".local/share/cheka/wp-cli.phar"),
             user: name,
             uid: user.uid,
             gid: user.gid,
-            group,
+            group: user.group,
             home,
             conf,
         })

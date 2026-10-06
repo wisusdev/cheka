@@ -13,6 +13,10 @@ versión de PHP que elijas por proyecto, MariaDB y HTTPS local.
 > La versión original en bash (0.1.0) se conserva en `legacy/cheka.sh` como referencia para
 > las pruebas de paridad. Para la arquitectura interna y el plan para macOS y Windows,
 > consulta [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).
+>
+> **Windows (en desarrollo):** cheka compila y ya gestiona el estado (`sites`, `park`, `link`,
+> `isolate`…), pero todavía no instala Apache, PHP ni el servicio. El avance está en el
+> hito 3 de `docs/ARQUITECTURA.md` §8.6.
 
 ---
 

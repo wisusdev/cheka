@@ -10,7 +10,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -222,7 +221,7 @@ pub fn apply(ctx: &Ctx, v: &str) -> Result<bool> {
             }
             fs::create_dir_all(&dir)?;
             for (file, target) in &desired {
-                symlink(target, dir.join(file))?;
+                crate::platform::symlink(target, &dir.join(file))?;
             }
             changed = true;
         }

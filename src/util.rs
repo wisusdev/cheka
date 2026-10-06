@@ -1,22 +1,20 @@
 use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use nix::unistd::{AccessFlags, access};
 
 /// Equivale a `[[ -x ruta ]]`.
 pub fn is_executable(p: &Path) -> bool {
-    access(p, AccessFlags::X_OK).is_ok()
+    crate::platform::is_executable(p)
 }
 
 /// Equivale a `readlink -f`: resuelve todo, y admite que el último componente no exista.
 pub fn canonicalize_lenient(p: &Path) -> Option<PathBuf> {
-    if let Ok(c) = fs::canonicalize(p) {
+    if let Ok(c) = crate::platform::canonicalize(p) {
         return Some(c);
     }
-    let parent = fs::canonicalize(p.parent()?).ok()?;
+    let parent = crate::platform::canonicalize(p.parent()?).ok()?;
     Some(parent.join(p.file_name()?))
 }
 
@@ -32,7 +30,7 @@ pub fn which(name: impl AsRef<OsStr>) -> Option<PathBuf> {
 
 pub fn write_mode(path: &Path, contents: &str, mode: u32) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("No pude escribir {}", path.display()))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    crate::platform::set_mode(path, mode)?;
     Ok(())
 }
 

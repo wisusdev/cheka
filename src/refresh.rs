@@ -5,7 +5,6 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 
 use anyhow::{Context, Result, bail};
-use nix::fcntl::{Flock, FlockArg};
 
 use crate::Ctx;
 use crate::detect::detect;
@@ -23,7 +22,7 @@ pub fn run(ctx: &Ctx) -> Result<String> {
     mkdir(&l.apache_sites)?;
     mkdir(&l.run_dir)?;
     let lock = File::create(l.run_dir.join("refresh.lock"))?;
-    let _lock = Flock::lock(lock, FlockArg::LockExclusive).map_err(|(_, e)| e).context("flock")?;
+    lock.lock().context("flock")?; // se libera al cerrar el archivo
 
     let st = &ctx.state;
     let def = st.default_php();

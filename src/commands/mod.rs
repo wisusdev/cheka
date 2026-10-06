@@ -8,7 +8,6 @@ pub mod tools;
 pub mod site;
 
 use std::ffi::OsString;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -16,6 +15,7 @@ use anyhow::{Context, Result, anyhow, bail};
 
 use crate::layout::TLD;
 use crate::util::{is_executable, mkdir, which, write, write_mode};
+use crate::platform::exec;
 use crate::{Ctx, php, refresh, render, report, sites, ui};
 
 pub fn refresh(ctx: &Ctx, quiet: bool) -> Result<()> {
@@ -96,13 +96,13 @@ pub fn php(ctx: &Ctx, args: Vec<OsString>) -> Result<()> {
     if !is_executable(&bin) {
         bail!("No encuentro {}", bin.display());
     }
-    Err(anyhow!("No pude ejecutar {}: {}", bin.display(), Command::new(&bin).args(args).exec()))
+    Err(anyhow!("No pude ejecutar {}: {}", bin.display(), exec(Command::new(&bin).args(args))))
 }
 
 pub fn composer(ctx: &Ctx, args: Vec<OsString>) -> Result<()> {
     let bin = current_cli(ctx)?;
     let composer = which("composer").ok_or_else(|| anyhow!("Composer no está instalado"))?;
-    Err(anyhow!("No pude ejecutar composer: {}", Command::new(&bin).arg(composer).args(args).exec()))
+    Err(anyhow!("No pude ejecutar composer: {}", exec(Command::new(&bin).arg(composer).args(args))))
 }
 
 pub use crate::report::php_units;
@@ -168,7 +168,7 @@ pub fn ensure_wpcli(ctx: &Ctx) -> Result<()> {
 pub fn wp(ctx: &Ctx, args: Vec<OsString>) -> Result<()> {
     ensure_wpcli(ctx)?;
     let bin = current_cli(ctx)?;
-    Err(anyhow!("No pude ejecutar WP-CLI: {}", Command::new(&bin).arg(&ctx.id.wpcli).args(args).exec()))
+    Err(anyhow!("No pude ejecutar WP-CLI: {}", exec(Command::new(&bin).arg(&ctx.id.wpcli).args(args))))
 }
 
 /// start | stop | restart de todos los servicios de cheka.
@@ -235,6 +235,10 @@ pub fn download_static_php(ctx: &Ctx, v: &str) -> Result<String> {
 
 /// php:install <versión> (root): instala si hace falta y (re)genera su configuración.
 pub fn php_install(ctx: &Ctx, version: &str) -> Result<()> {
+    // Windows usará los zips NTS de windows.php.net con mod_fcgid (fase B del port).
+    if cfg!(windows) {
+        bail!("'cheka php:install' todavía no está disponible en Windows");
+    }
     ctx.ensure_root()?;
     let l = &ctx.layout;
     let v = php::normalize(version);
@@ -285,14 +289,15 @@ pub fn fpm(ctx: &Ctx, version: &str) -> Result<()> {
     php::validate(version)?;
     let dir = php::config_dir(&ctx.layout, version);
     let bin = php::fpm_bin(&ctx.layout, version);
-    let err = Command::new(&bin)
-        .env("PHP_INI_SCAN_DIR", crate::phpconf::scan_dir_env(&ctx.layout, version))
-        .arg("--nodaemonize")
-        .arg("--fpm-config")
-        .arg(dir.join("php-fpm.conf"))
-        .arg("-c")
-        .arg(dir.join("php.ini"))
-        .exec();
+    let err = exec(
+        Command::new(&bin)
+            .env("PHP_INI_SCAN_DIR", crate::phpconf::scan_dir_env(&ctx.layout, version))
+            .arg("--nodaemonize")
+            .arg("--fpm-config")
+            .arg(dir.join("php-fpm.conf"))
+            .arg("-c")
+            .arg(dir.join("php.ini")),
+    );
     Err(anyhow!("No pude ejecutar {}: {err}", bin.display()))
 }
 

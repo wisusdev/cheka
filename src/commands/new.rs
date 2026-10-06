@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow, bail};
-use nix::unistd::geteuid;
 use regex::{NoExpand, Regex};
 
 use super::{db, ensure_php, ensure_wpcli, site::make_cert};
@@ -51,7 +50,7 @@ fn run(cmd: &mut Command, what: &str) -> Result<()> {
 }
 
 pub fn new(ctx: &mut Ctx, args: &[String]) -> Result<()> {
-    if geteuid().is_root() {
+    if crate::platform::is_root() {
         bail!("Ejecuta 'cheka new' con tu usuario, sin sudo");
     }
     if args.len() < 2 {

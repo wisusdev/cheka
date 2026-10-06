@@ -1,6 +1,5 @@
 //! Comandos que modifican el estado de los sitios: park, link, isolate, secure…
 
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -196,8 +195,7 @@ pub fn open(ctx: &Ctx, args: &[String]) -> Result<()> {
     let site = resolve(ctx, arg(args, 0))?;
     let scheme = if ctx.state.is_secure(&site.name) { "https" } else { "http" };
     let url = format!("{scheme}://{}.{TLD}", site.name);
-    let _ = Command::new("xdg-open")
-        .arg(&url)
+    let _ = crate::platform::open_url_command(&url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -210,10 +208,7 @@ pub fn log(ctx: &Ctx, args: &[String]) -> Result<()> {
     let site = resolve(ctx, arg(args, 0))?;
     let v = ctx.state.site_php(&site.name);
     let l = &ctx.layout.log_dir;
-    let err = Command::new("tail")
-        .args(["-n", "50", "-F"])
-        .arg(l.join(format!("{}-error.log", site.name)))
-        .arg(l.join(format!("php-{v}-errors.log")))
-        .exec();
-    Err(anyhow!("No pude ejecutar tail: {err}"))
+    let logs = [l.join(format!("{}-error.log", site.name)), l.join(format!("php-{v}-errors.log"))];
+    let err = crate::platform::follow_logs(&logs);
+    Err(anyhow!("No pude seguir los logs: {err}"))
 }

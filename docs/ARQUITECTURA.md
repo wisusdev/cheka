@@ -520,7 +520,20 @@ password = "secret"
    static-php-cli para macOS. Reutiliza casi todo de Linux.
 3. **Windows.** `platform/windows.rs`: Apache Lounge + `mod_fcgid` + PHP NTS de
    `releases.json`, servicio de Windows, named pipe y DNS (primero el archivo `hosts`, luego
-   NRPT + DNS integrado).
+   NRPT + DNS integrado). **Decidido:** DNS con el archivo `hosts`; Apache y PHP los
+   descarga cheka a `C:\ProgramData\cheka`, MariaDB con winget. Hitos:
+   - **3.1 ✅** Compila en Windows. Lo que depende del sistema operativo vive en
+     `src/platform/` (`unix.rs`, `windows.rs`): privilegios (`IsUserAnAdmin`; elevación con el
+     `sudo` de Windows 11), `exec`, permisos, dueños, symlinks, usuario y rutas canónicas sin
+     `\\?\`. `nix` es dependencia solo de Unix. Rutas: `%APPDATA%\cheka` (usuario) y
+     `%ProgramData%\cheka` (sistema); servicios con `sc.exe`/PowerShell. Funcionan los
+     comandos de lectura y los que cambian el estado (`park`, `link`, `isolate`…). `install`,
+     `php:install` y `daemon` avisan que aún no existen; `tests/parity.rs` y
+     `tests/daemon_install.rs` son solo de Unix.
+   - **3.2** `php:install` (zips NTS + `releases.json` + sha256), Apache Lounge y plantilla de
+     vhost con `mod_fcgid` (rutas con `/`), `refresh` real.
+   - **3.3** `install`/`uninstall`, servicio de Windows + named pipe, archivo `hosts`, mkcert,
+     MariaDB.
 4. **UI de bandeja (estilo PHP Monitor)** — en curso, crate `ui/` (`cheka-ui`, Tauri v2,
    interfaz en HTML/CSS/JS sin frameworks). Ventana con sitios (abrir, HTTPS, versión de PHP,
    carpeta, logs, enlazar carpetas), versiones de PHP, servicios, asistente de `new` con la
