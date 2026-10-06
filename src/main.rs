@@ -55,8 +55,11 @@ enum Cmd {
     /// Instala (o reconfigura) una versión de PHP
     #[command(name = "php:install")]
     PhpInstall { version: String },
-    /// Muestra el estado en el formato TOML futuro
-    Migrate,
+    /// Pasa el estado a cheka.toml (--dry-run: solo mostrar; --legacy: volver al formato de bash)
+    Migrate {
+        #[arg(allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Cada carpeta dentro de dir → <carpeta>.test
     Park { args: Vec<String> },
     /// Deja de aparcar dir
@@ -142,7 +145,7 @@ fn run(cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Composer { args } => commands::composer(ctx, args),
         Cmd::Status => commands::status(ctx),
         Cmd::PhpInstall { version } => commands::php_install(ctx, &version),
-        Cmd::Migrate => commands::migrate(ctx),
+        Cmd::Migrate { args } => commands::migrate(ctx, &args),
         Cmd::Fpm { version } => commands::fpm(ctx, &version),
         Cmd::Park { args } => site::park(ctx, &args),
         Cmd::Forget { args } => site::forget(ctx, &args),

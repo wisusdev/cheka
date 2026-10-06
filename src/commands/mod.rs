@@ -5,7 +5,6 @@ pub mod new;
 pub mod site;
 
 use std::ffi::OsString;
-use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -44,9 +43,12 @@ pub fn sites(ctx: &Ctx) -> Result<()> {
 }
 
 pub fn paths(ctx: &Ctx) -> Result<()> {
-    match std::fs::read(ctx.state.conf.join("paths")) {
-        Ok(b) if !b.is_empty() => std::io::stdout().write_all(&b)?,
-        _ => ui::info("No hay carpetas aparcadas (usa: cheka park)"),
+    let paths: Vec<&String> = ctx.state.paths.iter().filter(|p| !p.is_empty()).collect();
+    if paths.is_empty() {
+        ui::info("No hay carpetas aparcadas (usa: cheka park)");
+    }
+    for p in paths {
+        println!("{p}");
     }
     Ok(())
 }
@@ -298,8 +300,31 @@ pub fn fpm(ctx: &Ctx, version: &str) -> Result<()> {
     Err(anyhow!("No pude ejecutar {}: {err}", bin.display()))
 }
 
-/// Muestra el estado actual en el formato TOML futuro (no escribe nada todavía).
-pub fn migrate(ctx: &Ctx) -> Result<()> {
-    print!("{}", ctx.state.to_toml()?);
+/// `migrate`: pasa el estado del formato de bash a `cheka.toml`.
+/// `--dry-run` solo muestra el resultado; `--legacy` hace el camino inverso (para volver
+/// a la versión en bash).
+pub fn migrate(ctx: &mut Ctx, args: &[String]) -> Result<()> {
+    use crate::state::Format;
+    let toml = ctx.state.conf.join(crate::state::TOML_FILE);
+    match args.first().map(String::as_str) {
+        Some("--dry-run") => print!("{}", ctx.state.to_toml()?),
+        Some("--legacy") => {
+            ctx.state.save_legacy(&ctx.id)?;
+            ui::ok(format!(
+                "Estado escrito en el formato de la versión en bash en {} ({} quedó como {}.bak)",
+                ctx.state.conf.display(),
+                crate::state::TOML_FILE,
+                crate::state::TOML_FILE
+            ));
+        }
+        None if ctx.state.format == Format::Toml && !ctx.state.has_legacy_files() => {
+            ui::info(format!("El estado ya está en {}", toml.display()));
+        }
+        None => {
+            ctx.state.save(&ctx.id)?;
+            ui::ok(format!("Estado migrado a {} (lo anterior quedó en legacy/)", toml.display()));
+        }
+        Some(other) => bail!("Opción desconocida: {other} (usa: cheka migrate [--dry-run | --legacy])"),
+    }
     Ok(())
 }

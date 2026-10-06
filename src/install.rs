@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
 
-use crate::layout::{DB_PASS, DB_USER, DNS_PORT, TLD};
+use crate::layout::{DNS_PORT, TLD};
 use crate::render::system_file;
 use crate::util::{mkdir, which, write, write_mode};
 use crate::{Ctx, commands, php, refresh, ui, userfs};
@@ -112,6 +112,11 @@ pub fn install(ctx: &mut Ctx) -> Result<()> {
     ui::ok(format!("php{sysphp}-fpm, dnsmasq, mkcert"));
 
     step("Archivos de cheka");
+    // Un daemon de una versión anterior podría no entender el estado migrado y, al ver
+    // el cambio, retirar todos los vhosts: se detiene antes y se reinicia al final.
+    if !test {
+        quiet("systemctl", &["stop", "cheka"]);
+    }
     let exe = std::env::current_exe()?;
     let target = l.bin.join("cheka");
     mkdir(&l.bin)?;
@@ -127,17 +132,20 @@ pub fn install(ctx: &mut Ctx) -> Result<()> {
     }
     write(&l.etc.join("user"), &format!("{user}\n"))?;
     userfs::own(&ctx.id, &l.log_dir)?;
-    let conf = ctx.id.conf.clone();
-    for d in ["links", "isolated", "secured", "certs", "docroot"] {
-        userfs::mkdir(&ctx.id, &conf.join(d))?;
-    }
-    userfs::mkdir(&ctx.id, &ctx.id.home.join("Sites"))?;
+    userfs::mkdir(&ctx.id, &ctx.id.conf.join("certs"))?;
+    let sites_dir = ctx.id.home.join("Sites");
+    userfs::mkdir(&ctx.id, &sites_dir)?;
     if ctx.state.default_php.is_none() {
-        userfs::append_line(&ctx.id, &conf.join("config"), &format!("default_php={sysphp}"))?;
+        ctx.state.default_php = Some(sysphp.clone());
     }
-    userfs::touch(&ctx.id, &conf.join("paths"))?;
-    if fs::read_to_string(conf.join("paths")).unwrap_or_default().is_empty() {
-        userfs::write(&ctx.id, &conf.join("paths"), &format!("{}\n", ctx.id.home.join("Sites").display()))?;
+    if ctx.state.paths.iter().all(|p| p.is_empty()) {
+        ctx.state.paths = vec![sites_dir.display().to_string()];
+    }
+    // Guardar migra el estado de la versión en bash a cheka.toml (si hacía falta).
+    let migrating = ctx.state.has_legacy_files();
+    ctx.state.save(&ctx.id)?;
+    if migrating {
+        ui::ok(format!("Estado migrado a {} (lo anterior quedó en legacy/)", ctx.id.conf.join("cheka.toml").display()));
     }
     mkdir(&l.units)?;
     for unit in ["cheka-php@.service", "cheka-dns.service", "cheka.service"] {
@@ -150,7 +158,6 @@ pub fn install(ctx: &mut Ctx) -> Result<()> {
         }
         userfs::remove(&l.units.join(unit))?;
     }
-    userfs::remove(&conf.join(".refresh-request"))?;
     ctx.sys.daemon_reload()?;
     ui::ok(format!("{} instalado, sitios en ~/Sites", target.display()));
 
@@ -204,13 +211,17 @@ pub fn install(ctx: &mut Ctx) -> Result<()> {
     if test {
         ui::info("Omitido en modo prueba");
     } else if ctx.sys.is_active("mariadb") {
+        let (db_user, db_pass) = (ctx.state.db_user.clone(), ctx.state.db_password.clone());
+        if [&db_user, &db_pass].iter().any(|v| v.contains(['\'', '\\']) || v.is_empty()) {
+            bail!("[db] en cheka.toml: el usuario y la contraseña no pueden estar vacíos ni tener ' o \\");
+        }
         let sql = format!(
             "CREATE USER IF NOT EXISTS '{user}'@'localhost' IDENTIFIED VIA unix_socket;\n\
              GRANT ALL PRIVILEGES ON *.* TO '{user}'@'localhost' WITH GRANT OPTION;\n\
-             CREATE USER IF NOT EXISTS '{DB_USER}'@'localhost' IDENTIFIED BY '{DB_PASS}';\n\
-             CREATE USER IF NOT EXISTS '{DB_USER}'@'127.0.0.1' IDENTIFIED BY '{DB_PASS}';\n\
-             GRANT ALL PRIVILEGES ON *.* TO '{DB_USER}'@'localhost';\n\
-             GRANT ALL PRIVILEGES ON *.* TO '{DB_USER}'@'127.0.0.1';\n\
+             CREATE USER IF NOT EXISTS '{db_user}'@'localhost' IDENTIFIED BY '{db_pass}';\n\
+             CREATE USER IF NOT EXISTS '{db_user}'@'127.0.0.1' IDENTIFIED BY '{db_pass}';\n\
+             GRANT ALL PRIVILEGES ON *.* TO '{db_user}'@'localhost';\n\
+             GRANT ALL PRIVILEGES ON *.* TO '{db_user}'@'127.0.0.1';\n\
              FLUSH PRIVILEGES;\n"
         );
         let mut child = Command::new("mariadb").stdin(Stdio::piped()).spawn()?;
@@ -218,7 +229,7 @@ pub fn install(ctx: &mut Ctx) -> Result<()> {
         if !child.wait()?.success() {
             bail!("No pude crear los usuarios de MariaDB");
         }
-        ui::ok(format!("Usuario '{user}' (sin contraseña, por socket) y '{DB_USER}'/'{DB_PASS}' para tus proyectos"));
+        ui::ok(format!("Usuario '{user}' (sin contraseña, por socket) y '{db_user}'/'{db_pass}' para tus proyectos"));
     } else {
         ui::warn("MariaDB no está activo; omito la creación de usuarios");
     }

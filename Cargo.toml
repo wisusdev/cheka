@@ -6,7 +6,7 @@ description = "Entorno local PHP al estilo de Laravel Valet (port en Rust)"
 rust-version = "1.85"
 
 [[bin]]
-name = "cheka-rs"
+name = "cheka"
 path = "src/main.rs"
 
 [dependencies]

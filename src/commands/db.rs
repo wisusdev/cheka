@@ -7,7 +7,6 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result, bail};
 use regex::Regex;
 
-use crate::layout::{DB_PASS, DB_USER};
 use crate::{Ctx, Reported, sites, ui};
 
 fn valid(name: &str) -> Result<()> {
@@ -59,11 +58,12 @@ fn wait_ok(child: &mut std::process::Child, what: &str) -> Result<()> {
 
 pub fn db(ctx: &Ctx, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("help");
+    let (db_user, db_pass) = (&ctx.state.db_user, &ctx.state.db_password);
     let rest = args.get(1..).unwrap_or_default();
     match sub {
         "create" => {
             create(&name_arg(ctx, rest, 0)?)?;
-            println!("  host: localhost (o 127.0.0.1)   usuario: {DB_USER}   contraseña: {DB_PASS}");
+            println!("  host: localhost (o 127.0.0.1)   usuario: {db_user}   contraseña: {db_pass}");
         }
         "drop" => {
             let name = name_arg(ctx, rest, 0)?;
@@ -141,7 +141,7 @@ pub fn db(ctx: &Ctx, args: &[String]) -> Result<()> {
   list                            Lista las bases
   import <archivo.sql[.gz]> [base]
   export [base] [archivo.sql.gz]
-Credenciales para tus proyectos: usuario '{DB_USER}', contraseña '{DB_PASS}', host localhost.
+Credenciales para tus proyectos: usuario '{db_user}', contraseña '{db_pass}', host localhost.
 "
         ),
     }

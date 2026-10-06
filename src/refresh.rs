@@ -69,7 +69,6 @@ pub fn run(ctx: &Ctx) -> Result<String> {
             ui::warn(format!("No pude iniciar PHP {v}"));
         }
     }
-    write_watch_unit(ctx)?;
 
     if dirs_equal(staging.path(), &l.apache_sites) {
         let msg = format!("Sin cambios ({count} sitios)");
@@ -100,8 +99,7 @@ pub fn run(ctx: &Ctx) -> Result<String> {
 /// Pide un refresh después de modificar el estado, en este orden:
 /// 1. al daemon por el socket (sin sudo),
 /// 2. directamente, si somos root o estamos en modo prueba,
-/// 3. al vigilante de la versión en bash (`cheka-watch.path`), mientras conviven,
-/// 4. con sudo.
+/// 3. con sudo.
 pub fn request(ctx: &mut Ctx) -> Result<()> {
     ctx.reload_state()?;
     if let Ok(resp) = ipc::call(&ctx.layout.socket(), &ipc::Request::Refresh) {
@@ -114,27 +112,6 @@ pub fn request(ctx: &mut Ctx) -> Result<()> {
     if ctx.is_root() {
         return run(ctx).map(drop);
     }
-    if ctx.sys.is_active("cheka-watch.path") {
-        let req = ctx.state.refresh_request();
-        let last = ctx.layout.run_dir.join("last-refresh");
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
-        fs::write(&req, format!("{stamp}\n")).with_context(|| format!("No pude escribir {}", req.display()))?;
-        let mtime = |p: &std::path::Path| fs::metadata(p).and_then(|m| m.modified()).ok();
-        for _ in 0..60 {
-            if let (Some(l), Some(r)) = (mtime(&last), mtime(&req))
-                && l > r
-            {
-                let msg = fs::read_to_string(&last)?.trim_end_matches('\n').to_string();
-                if let Some(err) = msg.strip_prefix("ERROR") {
-                    bail!("{}", err.strip_prefix(": ").unwrap_or(err));
-                }
-                ui::ok(msg);
-                return Ok(());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        ui::warn("El servicio cheka-watch no respondió; lo hago con sudo");
-    }
     ctx.run_as_root(&["refresh"])
 }
 
@@ -144,26 +121,6 @@ fn replace_confs(dir: &std::path::Path, from: &std::path::Path) -> Result<()> {
     }
     for f in conf_files(from)? {
         fs::copy(&f, dir.join(f.file_name().unwrap()))?;
-    }
-    Ok(())
-}
-
-/// Regenera `cheka-watch.path` (el vigilante de la versión en bash) si cambiaron las
-/// carpetas aparcadas. Con el daemon instalado (`cheka.service`) ya no hace falta.
-fn write_watch_unit(ctx: &Ctx) -> Result<()> {
-    if ctx.layout.units.join("cheka.service").exists() {
-        return Ok(());
-    }
-    let f = ctx.layout.units.join("cheka-watch.path");
-    let new = render::watch_unit(&ctx.state.paths, &ctx.state.refresh_request());
-    if fs::read_to_string(&f).is_ok_and(|old| old == new) {
-        return Ok(());
-    }
-    mkdir(&ctx.layout.units)?;
-    write_mode(&f, &new, 0o644)?;
-    ctx.sys.daemon_reload()?;
-    if ctx.sys.is_enabled("cheka-watch.path") {
-        ctx.sys.restart("cheka-watch.path")?;
     }
     Ok(())
 }

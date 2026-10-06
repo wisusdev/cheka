@@ -1,6 +1,13 @@
-//! Pruebas de paridad: la versión en bash (`./cheka`) y la de Rust (`cheka-rs`) se ejecutan
-//! sobre el mismo proyecto de prueba en modo prefijo (sin root, sin servicios) y deben
-//! generar exactamente los mismos archivos y la misma salida.
+//! Pruebas de paridad: la versión en bash (`legacy/cheka.sh`) y la de Rust se ejecutan sobre
+//! el mismo proyecto de prueba en modo prefijo (sin root, sin servicios). Deben producir la
+//! misma salida y los mismos archivos (vhosts, configuración de PHP, proyectos creados).
+//!
+//! Dos diferencias son intencionales y se comparan aparte:
+//! - el estado del usuario: bash usa archivos sueltos y Rust `cheka.toml`; se compara su
+//!   **contenido** (`State::same_content`), no los bytes;
+//! - Rust ya no genera `cheka-watch.path` (lo reemplaza el daemon).
+
+use cheka::state::{Format, State};
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -116,10 +123,10 @@ impl Fixture {
         let mut cmd = match which {
             Impl::Bash => {
                 let mut c = Command::new("bash");
-                c.arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("cheka"));
+                c.arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("legacy/cheka.sh"));
                 c
             }
-            Impl::Rust => Command::new(env!("CARGO_BIN_EXE_cheka-rs")),
+            Impl::Rust => Command::new(env!("CARGO_BIN_EXE_cheka")),
         };
         cmd.args(args)
             .current_dir(cwd)
@@ -147,7 +154,13 @@ impl Fixture {
             for e in rd.flatten() {
                 let p = e.path();
                 let rel = p.strip_prefix(base).unwrap().display().to_string();
-                if rel.starts_with("root/opt") || rel.ends_with("refresh.lock") || rel == "bin" {
+                let state_file = rel.starts_with("conf/") && !rel.starts_with("conf/certs");
+                if rel.starts_with("root/opt")
+                    || rel.ends_with("refresh.lock")
+                    || rel == "bin"
+                    || state_file
+                    || rel.starts_with("root/etc/systemd")
+                {
                     continue;
                 }
                 let meta = fs::symlink_metadata(&p).unwrap();
@@ -193,14 +206,22 @@ fn assert_same_files(what: &str, bash: &BTreeMap<String, Vec<u8>>, rust: &BTreeM
 
 /// Ejecuta la misma secuencia de comandos con cada implementación desde cero y compara
 /// salidas y archivos.
-fn compare(what: &str, fx: &Fixture, steps: &[(&[&str], &Path)]) {
+/// Devuelve el estado final que dejó Rust, para comprobaciones adicionales.
+fn compare(what: &str, fx: &Fixture, steps: &[(&[&str], &Path)]) -> State {
     let mut results = Vec::new();
     for which in [Impl::Bash, Impl::Rust] {
         fx.populate();
         let outs: Vec<Output> = steps.iter().map(|(args, cwd)| fx.run(which, args, cwd)).collect();
-        results.push((outs, fx.snapshot()));
+        results.push((outs, fx.snapshot(), State::load(&fx.conf).unwrap()));
     }
     let (rust, bash) = (results.pop().unwrap(), results.pop().unwrap());
+    assert_eq!(bash.2.format, Format::Legacy, "{what}: bash solo entiende el formato viejo");
+    assert!(
+        bash.2.same_content(&rust.2),
+        "{what}: el estado final difiere\nbash: {:#?}\nrust: {:#?}",
+        bash.2,
+        rust.2
+    );
     if std::env::var_os("PARITY_SHOW").is_some() {
         for (i, o) in rust.0.iter().enumerate() {
             eprintln!("[{i}] {:?} → {:?}\n{}{}", steps[i].0, o.status.code(), text(&o.stdout), text(&o.stderr));
@@ -210,6 +231,7 @@ fn compare(what: &str, fx: &Fixture, steps: &[(&[&str], &Path)]) {
         assert_same_output(&format!("{what}, paso {i} ({:?})", steps[i].0), b, r);
     }
     assert_same_files(what, &bash.1, &rust.1);
+    rust.2
 }
 
 #[test]
@@ -295,13 +317,14 @@ fn version_no_soportada() {
 /// depende de los anteriores; se comparan la salida de cada paso y el árbol final.
 #[test]
 fn comandos_que_modifican_el_estado() {
+    // (el estado final se compara por contenido dentro de `compare`)
     let fx = Fixture::new();
     let b = fx.base.clone();
     let (sites, ext) = (b.join("Sites"), b.join("externo"));
     let (api, legado, px, otros) = (sites.join("api"), sites.join("legado"), ext.join("proyecto-x"), b.join("Otros"));
     let no_existe = b.join("no-existe-x");
     let (otros_s, no_existe_s) = (otros.display().to_string(), no_existe.display().to_string());
-    compare(
+    let rust_state = compare(
         "mutaciones",
         &fx,
         &[
@@ -357,6 +380,43 @@ fn comandos_que_modifican_el_estado() {
             (&["sites"], &b),
         ],
     );
+    assert_eq!(rust_state.format, Format::Toml, "Rust debió migrar el estado a cheka.toml");
+    let legacy = fx.conf.join("legacy");
+    for item in ["config", "paths", "links", "isolated", "secured", "docroot"] {
+        assert!(legacy.join(item).exists(), "falta legacy/{item}: la migración no debe perder nada");
+        assert!(!fx.conf.join(item).exists(), "{item} debió moverse a legacy/");
+    }
+}
+
+/// `migrate`: del formato viejo a TOML y de vuelta, sin perder nada y sin cambiar lo que
+/// cheka genera.
+#[test]
+fn migrate_ida_y_vuelta() {
+    let fx = Fixture::new();
+    let b = fx.base.clone();
+    let before = State::load(&fx.conf).unwrap();
+    assert_eq!(before.format, Format::Legacy);
+    let sites_before = fx.run(Impl::Rust, &["sites"], &b);
+
+    let dry = fx.run(Impl::Rust, &["migrate", "--dry-run"], &b);
+    assert!(text(&dry.stdout).contains("[sites.aislado]\nphp = \"8.4\""), "{}", text(&dry.stdout));
+    assert!(!fx.conf.join("cheka.toml").exists(), "--dry-run no escribe nada");
+
+    let out = fx.run(Impl::Rust, &["migrate"], &b);
+    assert!(text(&out.stdout).contains("Estado migrado"), "{}", text(&out.stdout));
+    let after = State::load(&fx.conf).unwrap();
+    assert_eq!(after.format, Format::Toml);
+    assert!(before.same_content(&after));
+    assert_eq!(text(&fx.run(Impl::Rust, &["sites"], &b).stdout), text(&sites_before.stdout));
+    assert!(text(&fx.run(Impl::Rust, &["migrate"], &b).stdout).contains("ya está"));
+
+    // Y de vuelta: bash vuelve a entender el estado y ve los mismos sitios.
+    fx.run(Impl::Rust, &["migrate", "--legacy"], &b);
+    let back = State::load(&fx.conf).unwrap();
+    assert_eq!(back.format, Format::Legacy);
+    assert!(before.same_content(&back));
+    assert!(fx.conf.join("cheka.toml.bak").exists());
+    assert_eq!(text(&fx.run(Impl::Bash, &["sites"], &b).stdout), text(&sites_before.stdout));
 }
 
 fn mariadb_disponible() -> bool {

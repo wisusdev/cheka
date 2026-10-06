@@ -61,6 +61,10 @@ configuración de cada componente y los mantiene sincronizados.
 
 ### 2.1 Estado del usuario: `~/.config/cheka/` (la fuente de verdad)
 
+> Desde la versión 0.2 (Rust) el estado vive en un solo archivo, `cheka.toml` (formato en
+> §8.4); los certificados siguen en `certs/`. La tabla describe el formato de la versión en
+> bash, que Rust todavía lee y migra; tras migrar, esos archivos quedan en `legacy/`.
+
 | Ruta | Contenido | Escrito por |
 |---|---|---|
 | `config` | Líneas `clave=valor`; hoy solo `default_php=8.5` | `use`, `install` |
@@ -506,7 +510,12 @@ password = "secret"
      `install` retira. `install`/`uninstall` funcionan en modo prefijo para probarlos sin root;
      `tests/daemon_install.rs` compara las unidades contra el `write_units` de bash y prueba el
      daemon en vivo (API, carpetas nuevas, rutas aparcadas después de arrancar).
-   - **1.4** `cheka-rs` reemplaza al script en el sistema y migra el estado a `cheka.toml`.
+   - **1.4 ✅** El estado vive en `cheka.toml`. El primer guardado (o `install`, o `cheka
+     migrate`) migra el formato de bash y aparta los archivos viejos en `legacy/`; `cheka
+     migrate --legacy` hace el camino inverso. Las credenciales de la base pasan a `[db]`.
+     El binario se llama `cheka`, el script de bash se movió a `legacy/cheka.sh` y Rust ya
+     no genera unidades heredadas. La paridad compara salidas y archivos byte a byte y el
+     estado por contenido.
 2. **macOS.** `platform/macos.rs`: Homebrew `httpd` + launchd + `/etc/resolver/test` +
    static-php-cli para macOS. Reutiliza casi todo de Linux.
 3. **Windows.** `platform/windows.rs`: Apache Lounge + `mod_fcgid` + PHP NTS de

@@ -10,9 +10,9 @@ use nix::unistd::geteuid;
 use regex::{NoExpand, Regex};
 
 use super::{db, ensure_php, ensure_wpcli, site::make_cert};
-use crate::layout::{DB_PASS, DB_USER, TLD};
+use crate::layout::TLD;
 use crate::util::{is_executable, which};
-use crate::{Ctx, Reported, php, refresh, sites, ui, userfs};
+use crate::{Ctx, Reported, php, refresh, sites, ui};
 
 const USAGE: &str = "Uso: cheka new <wordpress|laravel|codeigniter|php> <nombre> [--php=8.2] [--secure] [--multisite[=subdominios]] [--locale=es_MX]";
 
@@ -32,6 +32,8 @@ struct Plan {
     phpbin: PathBuf,
     multisite: Option<&'static str>,
     locale: String,
+    db_user: String,
+    db_pass: String,
 }
 
 /// Lo que se muestra al final.
@@ -121,11 +123,14 @@ pub fn new(ctx: &mut Ctx, args: &[String]) -> Result<()> {
         phpbin,
         multisite,
         locale,
+        db_user: ctx.state.db_user.clone(),
+        db_pass: ctx.state.db_password.clone(),
     };
     // Equivalente al `trap … EXIT` de bash: si algo falla de aquí en adelante, avisar.
     let created = (|| -> Result<Outcome> {
         if php_v != def {
-            userfs::write(&ctx.id, &ctx.state.conf.join("isolated").join(&name), &format!("{php_v}\n"))?;
+            ctx.state.isolated.insert(name.clone(), php_v.clone());
+            ctx.state.save(&ctx.id)?;
         }
         if secure {
             make_cert(ctx, &name)?;
@@ -160,7 +165,7 @@ pub fn new(ctx: &mut Ctx, args: &[String]) -> Result<()> {
         println!("  Multisite por {m}");
     }
     if outcome.has_db {
-        println!("  PHP {php_v} · Base de datos '{db_name}' (usuario {DB_USER} / {DB_PASS})");
+        println!("  PHP {php_v} · Base de datos '{db_name}' (usuario {} / {})", plan.db_user, plan.db_pass);
     } else {
         println!("  PHP {php_v}");
     }
@@ -212,8 +217,8 @@ fn wordpress(ctx: &Ctx, p: &Plan) -> Result<Outcome> {
         "config",
         "create",
         &format!("--dbname={}", p.db),
-        &format!("--dbuser={DB_USER}"),
-        &format!("--dbpass={DB_PASS}"),
+        &format!("--dbuser={}", p.db_user),
+        &format!("--dbpass={}", p.db_pass),
         "--dbhost=localhost",
         &format!("--locale={}", p.locale),
         "--extra-php",
@@ -303,8 +308,8 @@ fn laravel(p: &Plan) -> Result<Outcome> {
         ("DB_HOST", "127.0.0.1"),
         ("DB_PORT", "3306"),
         ("DB_DATABASE", &p.db),
-        ("DB_USERNAME", DB_USER),
-        ("DB_PASSWORD", DB_PASS),
+        ("DB_USERNAME", &p.db_user),
+        ("DB_PASSWORD", &p.db_pass),
     ] {
         set_env(&env, k, v)?;
     }
@@ -329,8 +334,8 @@ fn codeigniter(p: &Plan) -> Result<Outcome> {
         ("app.baseURL", base_url.as_str()),
         ("database.default.hostname", "localhost"),
         ("database.default.database", &p.db),
-        ("database.default.username", DB_USER),
-        ("database.default.password", DB_PASS),
+        ("database.default.username", &p.db_user),
+        ("database.default.password", &p.db_pass),
         ("database.default.DBDriver", "MySQLi"),
         ("database.default.port", "3306"),
     ] {

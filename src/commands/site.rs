@@ -42,13 +42,11 @@ pub fn park(ctx: &mut Ctx, args: &[String]) -> Result<()> {
     if !Path::new(&dir).is_dir() {
         bail!("No existe el directorio: {dir}");
     }
-    let paths = ctx.state.conf.join("paths");
-    userfs::mkdir(&ctx.id, &ctx.state.conf)?;
-    userfs::touch(&ctx.id, &paths)?;
     if ctx.state.paths.contains(&dir) {
         ui::info(format!("{dir} ya estaba aparcado"));
     } else {
-        userfs::append_line(&ctx.id, &paths, &dir)?;
+        ctx.state.paths.push(dir.clone());
+        ctx.state.save(&ctx.id)?;
         ui::ok(format!("Aparcado: cada carpeta dentro de {dir} será <carpeta>.{TLD}"));
     }
     refresh::request(ctx)
@@ -59,8 +57,8 @@ pub fn forget(ctx: &mut Ctx, args: &[String]) -> Result<()> {
     if !ctx.state.paths.contains(&dir) {
         bail!("{dir} no está aparcado");
     }
-    let rest: String = ctx.state.paths.iter().filter(|p| **p != dir).map(|p| format!("{p}\n")).collect();
-    userfs::write(&ctx.id, &ctx.state.conf.join("paths"), &rest)?;
+    ctx.state.paths.retain(|p| *p != dir);
+    ctx.state.save(&ctx.id)?;
     ui::ok(format!("Olvidado: {dir}"));
     refresh::request(ctx)
 }
@@ -76,7 +74,8 @@ pub fn link(ctx: &mut Ctx, args: &[String]) -> Result<()> {
     }
     let cwd = ctx.cwd()?;
     let target = canonicalize_lenient(&cwd).unwrap_or_else(|| cwd.clone());
-    userfs::symlink_force(&ctx.id, &target, &ctx.state.conf.join("links").join(&name))?;
+    ctx.state.links.insert(name.clone(), target);
+    ctx.state.save(&ctx.id)?;
     ui::ok(format!("Enlazado: http://{name}.{TLD} → {}", cwd.display()));
     refresh::request(ctx)
 }
@@ -87,11 +86,10 @@ pub fn unlink(ctx: &mut Ctx, args: &[String]) -> Result<()> {
         None => cwd_basename(ctx)?,
     };
     let name = sites::normalize(&raw);
-    let link = ctx.state.conf.join("links").join(&name);
-    if !link.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+    if ctx.state.links.remove(&name).is_none() {
         bail!("No hay un enlace llamado '{name}'");
     }
-    userfs::remove(&link)?;
+    ctx.state.save(&ctx.id)?;
     ui::ok(format!("Enlace eliminado: {name}"));
     refresh::request(ctx)
 }
@@ -101,14 +99,16 @@ pub fn isolate(ctx: &mut Ctx, args: &[String]) -> Result<()> {
     let v = php::normalize(v);
     let site = resolve(ctx, site_flag(&args[1..]))?;
     ensure_php(ctx, &v)?;
-    userfs::write(&ctx.id, &ctx.state.conf.join("isolated").join(&site.name), &format!("{v}\n"))?;
+    ctx.state.isolated.insert(site.name.clone(), v.clone());
+    ctx.state.save(&ctx.id)?;
     ui::ok(format!("{} usará PHP {v}", site.name));
     refresh::request(ctx)
 }
 
 pub fn unisolate(ctx: &mut Ctx, args: &[String]) -> Result<()> {
     let site = resolve(ctx, site_flag(args))?;
-    userfs::remove(&ctx.state.conf.join("isolated").join(&site.name))?;
+    ctx.state.isolated.remove(&site.name);
+    ctx.state.save(&ctx.id)?;
     ui::ok(format!("{} vuelve a la versión por defecto (PHP {})", site.name, ctx.state.default_php()));
     refresh::request(ctx)
 }
@@ -120,25 +120,18 @@ pub fn use_php(ctx: &mut Ctx, args: &[String]) -> Result<()> {
     };
     let v = php::normalize(v);
     ensure_php(ctx, &v)?;
-    let cfg = ctx.state.conf.join("config");
-    let mut text: String = std::fs::read_to_string(&cfg)
-        .unwrap_or_default()
-        .lines()
-        .filter(|l| !l.starts_with("default_php="))
-        .map(|l| format!("{l}\n"))
-        .collect();
-    text.push_str(&format!("default_php={v}\n"));
-    userfs::write(&ctx.id, &cfg, &text)?;
+    ctx.state.default_php = Some(v.clone());
+    ctx.state.save(&ctx.id)?;
     ui::ok(format!("PHP por defecto: {v}"));
     refresh::request(ctx)
 }
 
 pub fn docroot(ctx: &mut Ctx, args: &[String]) -> Result<()> {
     let site = resolve(ctx, None)?;
-    let file = ctx.state.conf.join("docroot").join(&site.name);
     match args.first() {
         None => {
-            userfs::remove(&file)?;
+            ctx.state.docroot.remove(&site.name);
+            ctx.state.save(&ctx.id)?;
             ui::ok(format!("{} vuelve a la detección automática", site.name));
         }
         Some(sub) => {
@@ -146,7 +139,8 @@ pub fn docroot(ctx: &mut Ctx, args: &[String]) -> Result<()> {
                 bail!("No existe {}/{sub}", site.path.display());
             }
             let sub = sub.strip_suffix('/').unwrap_or(sub);
-            userfs::write(&ctx.id, &file, &format!("{sub}\n"))?;
+            ctx.state.docroot.insert(site.name.clone(), sub.to_string());
+            ctx.state.save(&ctx.id)?;
             ui::ok(format!("{} servirá desde {}/{sub}", site.name, site.path.display()));
         }
     }
@@ -154,10 +148,9 @@ pub fn docroot(ctx: &mut Ctx, args: &[String]) -> Result<()> {
 }
 
 /// Certificado local para `sitio.test` y `*.sitio.test`, y marca el sitio como seguro.
-pub fn make_cert(ctx: &Ctx, name: &str) -> Result<()> {
+pub fn make_cert(ctx: &mut Ctx, name: &str) -> Result<()> {
     let mkcert = which("mkcert").ok_or_else(|| anyhow!("mkcert no está instalado (ejecuta: sudo cheka install)"))?;
     userfs::mkdir(&ctx.id, &ctx.state.conf.join("certs"))?;
-    userfs::mkdir(&ctx.id, &ctx.state.conf.join("secured"))?;
     let (cert, key) = (ctx.state.cert(name), ctx.state.cert_key(name));
     let ok = Command::new(mkcert)
         .arg("-cert-file")
@@ -176,7 +169,8 @@ pub fn make_cert(ctx: &Ctx, name: &str) -> Result<()> {
     for f in [&cert, &key] {
         userfs::own(&ctx.id, f)?;
     }
-    userfs::touch(&ctx.id, &ctx.state.conf.join("secured").join(name))?;
+    ctx.state.secured.insert(name.to_string());
+    ctx.state.save(&ctx.id)?;
     ui::ok(format!("https://{name}.{TLD} listo"));
     Ok(())
 }
@@ -189,13 +183,11 @@ pub fn secure(ctx: &mut Ctx, args: &[String]) -> Result<()> {
 
 pub fn unsecure(ctx: &mut Ctx, args: &[String]) -> Result<()> {
     let site = resolve(ctx, arg(args, 0))?;
-    for f in [
-        ctx.state.conf.join("secured").join(&site.name),
-        ctx.state.cert(&site.name),
-        ctx.state.cert_key(&site.name),
-    ] {
+    for f in [ctx.state.cert(&site.name), ctx.state.cert_key(&site.name)] {
         userfs::remove(&f)?;
     }
+    ctx.state.secured.remove(&site.name);
+    ctx.state.save(&ctx.id)?;
     ui::ok(format!("{} vuelve a http", site.name));
     refresh::request(ctx)
 }

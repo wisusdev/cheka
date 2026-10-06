@@ -21,7 +21,6 @@ fn env() -> &'static Environment<'static> {
         for (name, src) in [
             ("linux/vhost.conf.j2", include_str!("../templates/linux/vhost.conf.j2")),
             ("linux/vhost-body.j2", include_str!("../templates/linux/vhost-body.j2")),
-            ("linux/watch.path.j2", include_str!("../templates/linux/watch.path.j2")),
             ("linux/php-fpm.conf.j2", include_str!("../templates/linux/php-fpm.conf.j2")),
             ("linux/php.ini.j2", include_str!("../templates/linux/php.ini.j2")),
             ("linux/php-cli.sh.j2", include_str!("../templates/linux/php-cli.sh.j2")),
@@ -85,11 +84,6 @@ pub fn vhost(layout: &Layout, v: &Vhost) -> String {
             key => key.unwrap_or_default(),
         },
     )
-}
-
-pub fn watch_unit(paths: &[String], request: &Path) -> String {
-    let paths: Vec<&str> = paths.iter().map(String::as_str).filter(|p| !p.is_empty()).collect();
-    render("linux/watch.path.j2", context! { paths, request => request.display().to_string() })
 }
 
 pub fn php_fpm_conf(layout: &Layout, v: &str, user: &str, group: &str) -> String {

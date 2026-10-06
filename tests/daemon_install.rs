@@ -34,7 +34,7 @@ impl Env {
     }
 
     fn cmd(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_cheka-rs"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_cheka"));
         c.args(args)
             .current_dir(&self.base)
             .env("CHEKA_PREFIX", &self.root)
@@ -77,7 +77,7 @@ fn wait_for(what: &str, timeout: Duration, mut cond: impl FnMut() -> bool) {
 /// Genera las unidades con la función `write_units` del script de bash, sin ejecutar su
 /// `main`, para comparar contra las de Rust.
 fn bash_units(env: &Env, out: &Path) {
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("cheka");
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("legacy/cheka.sh");
     let st = Command::new("bash")
         .arg("-c")
         .arg(r#"source <(sed '/^# -* main -*$/,$d' "$1"); write_units"#)
@@ -126,6 +126,10 @@ fn install_en_modo_prefijo() {
         assert!(!env.root.join("etc/systemd/system").join(u).exists(), "{u} debió retirarse");
     }
     assert!(!env.conf.join(".refresh-request").exists());
+    // install migra el estado: cheka.toml nuevo, lo anterior en legacy/
+    let toml = fs::read_to_string(env.conf.join("cheka.toml")).unwrap();
+    assert!(toml.contains(&format!("paths = [\"{}\"]", env.sites.display())), "{toml}");
+    assert!(env.conf.join("legacy/paths").exists() && !env.conf.join("paths").exists());
 
     // DNS, Apache y estado
     assert_eq!(
@@ -176,7 +180,7 @@ fn install_en_modo_prefijo() {
         assert!(!env.root.join(gone).exists(), "{gone} debió eliminarse");
     }
     assert_eq!(env.read("etc/apache2/envvars"), "export APACHE_LOG_DIR=/var/log/apache2\nexport OTRA=2\n");
-    assert!(env.conf.join("paths").exists(), "sin --purge se conserva el estado del usuario");
+    assert!(env.conf.join("cheka.toml").exists(), "sin --purge se conserva el estado del usuario");
     assert!(env.sites.join("demo/index.php").exists(), "nunca se tocan los proyectos");
     assert_ok(&env.run(&["uninstall", "--purge"]));
     assert!(!env.conf.exists());

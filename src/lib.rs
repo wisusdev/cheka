@@ -80,7 +80,7 @@ impl Ctx {
             .unwrap_or(real))
     }
 
-    /// Ejecuta este mismo binario como root (`sudo cheka-rs …`), o directamente si ya lo somos.
+    /// Ejecuta este mismo binario como root (`sudo cheka …`), o directamente si ya lo somos.
     pub fn run_as_root(&self, args: &[&str]) -> Result<()> {
         let exe = std::env::current_exe()?;
         let status = if self.is_root() {
