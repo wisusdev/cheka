@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow};
-use nix::unistd::{Group, Uid, User, geteuid};
+use nix::unistd::{Gid, Group, Uid, User, geteuid};
 
 use crate::layout::Layout;
 
@@ -11,6 +11,7 @@ use crate::layout::Layout;
 pub struct Identity {
     pub user: String,
     pub uid: Uid,
+    pub gid: Gid,
     pub group: String,
     pub home: PathBuf,
     /// `~/.config/cheka` (o `CHEKA_CONF`).
@@ -51,6 +52,7 @@ impl Identity {
             wpcli: home.join(".local/share/cheka/wp-cli.phar"),
             user: name,
             uid: user.uid,
+            gid: user.gid,
             group,
             home,
             conf,

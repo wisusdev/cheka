@@ -1,4 +1,8 @@
-//! Implementación de los comandos (hito 1.1: lectura, refresh y php:install sin descarga).
+//! Implementación de los comandos. La CLI (`main.rs`) solo traduce argumentos a estas funciones.
+
+pub mod db;
+pub mod new;
+pub mod site;
 
 use std::ffi::OsString;
 use std::io::Write;
@@ -135,7 +139,95 @@ pub fn status(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
-/// php:install <versión> (root). En el hito 1.1 aún no descarga binarios estáticos.
+pub const STATIC_URL: &str = "https://dl.static-php.dev/static-php-cli/bulk";
+pub const WPCLI_URL: &str = "https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar";
+
+/// Valida la versión y, si no está instalada, la instala (pide sudo).
+pub fn ensure_php(ctx: &Ctx, v: &str) -> Result<()> {
+    php::validate(v)?;
+    if !php::installed(&ctx.layout, v) {
+        ctx.run_as_root(&["php:install", v])?;
+    }
+    Ok(())
+}
+
+pub fn ensure_wpcli(ctx: &Ctx) -> Result<()> {
+    if ctx.id.wpcli.is_file() {
+        return Ok(());
+    }
+    ui::info("Descargando WP-CLI…");
+    crate::userfs::mkdir(&ctx.id, ctx.id.wpcli.parent().unwrap())?;
+    let ok = Command::new("curl")
+        .args(["-fsSL", "-o"])
+        .arg(&ctx.id.wpcli)
+        .arg(WPCLI_URL)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        bail!("No pude descargar WP-CLI");
+    }
+    crate::userfs::own(&ctx.id, &ctx.id.wpcli)?;
+    Ok(())
+}
+
+pub fn wp(ctx: &Ctx, args: Vec<OsString>) -> Result<()> {
+    ensure_wpcli(ctx)?;
+    let bin = current_cli(ctx)?;
+    Err(anyhow!("No pude ejecutar WP-CLI: {}", Command::new(&bin).arg(&ctx.id.wpcli).args(args).exec()))
+}
+
+/// start | stop | restart de todos los servicios de cheka.
+pub fn services(ctx: &Ctx, action: &str) -> Result<()> {
+    ctx.ensure_root()?;
+    let mut units: Vec<String> = ["cheka-dns", "apache2", "mariadb"].map(String::from).into();
+    units.extend(php_units());
+    for u in units {
+        if Command::new("systemctl").args([action, &u]).status().is_ok_and(|s| s.success()) {
+            ui::ok(format!("{action} {u}"));
+        } else {
+            ui::warn(format!("{action} {u} falló"));
+        }
+    }
+    Ok(())
+}
+
+/// Descarga los binarios estáticos (fpm + cli) de la última versión X.Y.* disponible.
+fn download_static_php(ctx: &Ctx, v: &str) -> Result<()> {
+    let arch = std::env::consts::ARCH;
+    ui::info(format!("Buscando la última versión de PHP {v}…"));
+    let listing = Command::new("curl").args(["-fsSL", &format!("{STATIC_URL}/")]).output()?;
+    let re = regex::Regex::new(&format!(r"php-{}\.([0-9]+)-fpm-linux-{arch}\.tar\.gz", regex::escape(v)))?;
+    let patch = re
+        .captures_iter(&String::from_utf8_lossy(&listing.stdout))
+        .filter_map(|c| c[1].parse::<u32>().ok())
+        .max()
+        .ok_or_else(|| anyhow!("No encontré binarios de PHP {v} para {arch} en {STATIC_URL}"))?;
+    let full = format!("{v}.{patch}");
+    let tmp = tempfile::tempdir()?;
+    ui::info(format!("Descargando PHP {full} (fpm + cli)…"));
+    let dest = ctx.layout.opt.join(format!("php/{v}"));
+    mkdir(&dest)?;
+    for kind in ["fpm", "cli"] {
+        let tgz = tmp.path().join(format!("{kind}.tgz"));
+        let ok = Command::new("curl")
+            .args(["-fL", "--progress-bar", "-o"])
+            .arg(&tgz)
+            .arg(format!("{STATIC_URL}/php-{full}-{kind}-linux-{arch}.tar.gz"))
+            .status()?
+            .success();
+        if !ok {
+            bail!("No pude descargar PHP {full} ({kind})");
+        }
+        if !Command::new("tar").arg("xzf").arg(&tgz).arg("-C").arg(&dest).status()?.success() {
+            bail!("No pude descomprimir PHP {full} ({kind})");
+        }
+    }
+    let _ = Command::new("chown").args(["-R", "root:root"]).arg(&dest).stderr(Stdio::null()).status();
+    write(&dest.join("VERSION"), &format!("{full}\n"))?;
+    Ok(())
+}
+
+/// php:install <versión> (root): instala si hace falta y (re)genera su configuración.
 pub fn php_install(ctx: &Ctx, version: &str) -> Result<()> {
     ctx.ensure_root()?;
     let l = &ctx.layout;
@@ -161,9 +253,7 @@ pub fn php_install(ctx: &Ctx, version: &str) -> Result<()> {
             }
             let _ = ctx.sys.disable(&format!("php{v}-fpm"), true);
         } else {
-            bail!(
-                "La descarga de PHP {v} todavía no está portada a Rust (hito 1.2). Usa: sudo ~/cheka/cheka php:install {v}"
-            );
+            download_static_php(ctx, &v)?;
         }
     }
     mkdir(&l.log_dir)?;

@@ -12,12 +12,27 @@ pub mod sites;
 pub mod state;
 pub mod system;
 pub mod ui;
+pub mod userfs;
 pub mod util;
 
+use std::fmt;
 use std::os::unix::process::CommandExt;
+use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Result, anyhow};
+
+/// Error que ya se mostró al usuario (main solo debe salir con código 1).
+#[derive(Debug)]
+pub struct Reported;
+
+impl fmt::Display for Reported {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("(ya informado)")
+    }
+}
+
+impl std::error::Error for Reported {}
 use nix::unistd::geteuid;
 
 use identity::Identity;
@@ -45,6 +60,35 @@ impl Ctx {
     /// Root de verdad, o modo prueba (que nunca necesita privilegios).
     pub fn is_root(&self) -> bool {
         geteuid().is_root() || self.layout.is_test()
+    }
+
+    /// Relee el estado del usuario después de modificarlo.
+    pub fn reload_state(&mut self) -> Result<()> {
+        self.state = State::load(&self.id.conf)?;
+        Ok(())
+    }
+
+    /// Directorio actual "lógico" (`$PWD` de bash: conserva los symlinks del camino).
+    pub fn cwd(&self) -> Result<PathBuf> {
+        let real = std::env::current_dir()?;
+        Ok(std::env::var_os("PWD")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute() && std::fs::canonicalize(p).ok() == std::fs::canonicalize(&real).ok())
+            .unwrap_or(real))
+    }
+
+    /// Ejecuta este mismo binario como root (`sudo cheka-rs …`), o directamente si ya lo somos.
+    pub fn run_as_root(&self, args: &[&str]) -> Result<()> {
+        let exe = std::env::current_exe()?;
+        let status = if self.is_root() {
+            Command::new(exe).args(args).status()?
+        } else {
+            Command::new("sudo").arg("--").arg(exe).args(args).status()?
+        };
+        if !status.success() {
+            return Err(Reported.into());
+        }
+        Ok(())
     }
 
     /// Si no somos root, vuelve a ejecutar el mismo comando con sudo (no regresa).

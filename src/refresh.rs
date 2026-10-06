@@ -97,6 +97,38 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
+/// Pide un refresh después de modificar el estado. Como root (o en modo prueba) lo hace
+/// directamente; si no, se lo pide al servicio `cheka-watch` sin sudo y espera su
+/// resultado; si el servicio no responde, recurre a sudo (docs/ARQUITECTURA.md §3.2).
+pub fn request(ctx: &mut Ctx) -> Result<()> {
+    ctx.reload_state()?;
+    if ctx.is_root() {
+        return run(ctx);
+    }
+    if ctx.sys.is_active("cheka-watch.path") {
+        let req = ctx.state.refresh_request();
+        let last = ctx.layout.run_dir.join("last-refresh");
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
+        fs::write(&req, format!("{stamp}\n")).with_context(|| format!("No pude escribir {}", req.display()))?;
+        let mtime = |p: &std::path::Path| fs::metadata(p).and_then(|m| m.modified()).ok();
+        for _ in 0..60 {
+            if let (Some(l), Some(r)) = (mtime(&last), mtime(&req))
+                && l > r
+            {
+                let msg = fs::read_to_string(&last)?.trim_end_matches('\n').to_string();
+                if let Some(err) = msg.strip_prefix("ERROR") {
+                    bail!("{}", err.strip_prefix(": ").unwrap_or(err));
+                }
+                ui::ok(msg);
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        ui::warn("El servicio cheka-watch no respondió; lo hago con sudo");
+    }
+    ctx.run_as_root(&["refresh"])
+}
+
 fn replace_confs(dir: &std::path::Path, from: &std::path::Path) -> Result<()> {
     for f in conf_files(dir)? {
         fs::remove_file(f)?;

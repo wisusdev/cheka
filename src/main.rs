@@ -6,10 +6,7 @@ use clap::{ArgAction, Parser, Subcommand};
 use cheka::{Ctx, commands, ui};
 
 /// Comandos de la versión en bash que todavía no se portaron.
-const PENDING: &[&str] = &[
-    "install", "uninstall", "park", "forget", "link", "unlink", "isolate", "unisolate", "use",
-    "docroot", "wp", "new", "secure", "unsecure", "open", "log", "db", "start", "stop", "restart",
-];
+const PENDING: &[&str] = &["install", "uninstall"];
 
 #[derive(Parser)]
 #[command(
@@ -27,6 +24,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::enum_variant_names)]
 enum Cmd {
     /// Regenera la configuración de Apache (se hace solo)
     Refresh {
@@ -62,6 +60,62 @@ enum Cmd {
     PhpInstall { version: String },
     /// Muestra el estado en el formato TOML futuro
     Migrate,
+    /// Cada carpeta dentro de dir → <carpeta>.test
+    Park { args: Vec<String> },
+    /// Deja de aparcar dir
+    Forget { args: Vec<String> },
+    /// Publica el directorio actual como nombre.test
+    Link { args: Vec<String> },
+    /// Elimina un enlace
+    Unlink { args: Vec<String> },
+    /// Versión de PHP para el sitio actual
+    #[command(disable_help_flag = true)]
+    Isolate {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// El sitio actual vuelve a la versión por defecto
+    #[command(disable_help_flag = true)]
+    Unisolate {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Versión de PHP por defecto
+    Use { args: Vec<String> },
+    /// Fuerza la carpeta pública del sitio actual
+    Docroot { args: Vec<String> },
+    /// HTTPS con certificado local
+    Secure { args: Vec<String> },
+    /// Vuelve a HTTP
+    Unsecure { args: Vec<String> },
+    /// Abre el sitio en el navegador
+    Open { args: Vec<String> },
+    /// Sigue los logs de Apache y PHP del sitio
+    Log { args: Vec<String> },
+    /// Base de datos: create|drop|list|import|export
+    #[command(disable_help_flag = true)]
+    Db {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Crea un proyecto: wordpress|laravel|codeigniter|php <nombre>
+    #[command(disable_help_flag = true)]
+    New {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// WP-CLI con el PHP del sitio actual
+    #[command(disable_help_flag = true)]
+    Wp {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<OsString>,
+    },
+    /// Inicia los servicios
+    Start,
+    /// Detiene los servicios
+    Stop,
+    /// Reinicia los servicios
+    Restart,
     #[command(name = "_fpm", hide = true)]
     Fpm { version: String },
     #[command(external_subcommand)]
@@ -69,19 +123,39 @@ enum Cmd {
 }
 
 fn run(cmd: Cmd) -> anyhow::Result<()> {
-    let ctx = Ctx::load()?;
+    use commands::{db, new, site};
+    let mut ctx = Ctx::load()?;
+    let ctx = &mut ctx;
     match cmd {
-        Cmd::Refresh { quiet } => commands::refresh(&ctx, quiet),
-        Cmd::Sites => commands::sites(&ctx),
-        Cmd::Paths => commands::paths(&ctx),
-        Cmd::Versions => commands::versions(&ctx),
-        Cmd::WhichPhp => commands::which_php(&ctx),
-        Cmd::Php { args } => commands::php(&ctx, args),
-        Cmd::Composer { args } => commands::composer(&ctx, args),
-        Cmd::Status => commands::status(&ctx),
-        Cmd::PhpInstall { version } => commands::php_install(&ctx, &version),
-        Cmd::Migrate => commands::migrate(&ctx),
-        Cmd::Fpm { version } => commands::fpm(&ctx, &version),
+        Cmd::Refresh { quiet } => commands::refresh(ctx, quiet),
+        Cmd::Sites => commands::sites(ctx),
+        Cmd::Paths => commands::paths(ctx),
+        Cmd::Versions => commands::versions(ctx),
+        Cmd::WhichPhp => commands::which_php(ctx),
+        Cmd::Php { args } => commands::php(ctx, args),
+        Cmd::Composer { args } => commands::composer(ctx, args),
+        Cmd::Status => commands::status(ctx),
+        Cmd::PhpInstall { version } => commands::php_install(ctx, &version),
+        Cmd::Migrate => commands::migrate(ctx),
+        Cmd::Fpm { version } => commands::fpm(ctx, &version),
+        Cmd::Park { args } => site::park(ctx, &args),
+        Cmd::Forget { args } => site::forget(ctx, &args),
+        Cmd::Link { args } => site::link(ctx, &args),
+        Cmd::Unlink { args } => site::unlink(ctx, &args),
+        Cmd::Isolate { args } => site::isolate(ctx, &args),
+        Cmd::Unisolate { args } => site::unisolate(ctx, &args),
+        Cmd::Use { args } => site::use_php(ctx, &args),
+        Cmd::Docroot { args } => site::docroot(ctx, &args),
+        Cmd::Secure { args } => site::secure(ctx, &args),
+        Cmd::Unsecure { args } => site::unsecure(ctx, &args),
+        Cmd::Open { args } => site::open(ctx, &args),
+        Cmd::Log { args } => site::log(ctx, &args),
+        Cmd::Db { args } => db::db(ctx, &args),
+        Cmd::New { args } => new::new(ctx, &args),
+        Cmd::Wp { args } => commands::wp(ctx, args),
+        Cmd::Start => commands::services(ctx, "start"),
+        Cmd::Stop => commands::services(ctx, "stop"),
+        Cmd::Restart => commands::services(ctx, "restart"),
         Cmd::Other(args) => {
             let name = args.first().map(|a| a.to_string_lossy().into_owned()).unwrap_or_default();
             if PENDING.contains(&name.as_str()) {
@@ -102,7 +176,9 @@ fn main() -> ExitCode {
     match run(cmd) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            ui::error(format!("{e:#}"));
+            if e.downcast_ref::<cheka::Reported>().is_none() {
+                ui::error(format!("{e:#}"));
+            }
             ExitCode::FAILURE
         }
     }

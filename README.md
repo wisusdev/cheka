@@ -214,9 +214,9 @@ cargo test                  # unitarias + paridad byte a byte contra ./cheka (ba
 cargo clippy --all-targets
 ```
 
-Comandos ya portados: `refresh`, `sites`, `paths`, `versions`, `which-php`, `php`,
-`composer`, `status`, `php:install` (sin descarga) y `migrate` (vista previa del estado en
-TOML). Los demás responden con un aviso para usar la versión en bash.
+Ya están portados todos los comandos excepto `install` y `uninstall` (hito 1.3), más
+`migrate`, que muestra una vista previa del estado en TOML. Con `PARITY_SHOW=1 cargo test
+--test parity -- --nocapture` se ve la salida de cada paso de las pruebas de paridad.
 
 ## Pruebas
 

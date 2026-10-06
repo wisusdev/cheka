@@ -488,8 +488,12 @@ password = "secret"
      `php`, `composer`, `status`, `migrate`), más `php:install` sin descarga. El binario se
      llama `cheka-rs` mientras convive con el script. `tests/parity.rs` compara byte a byte
      contra el script de bash.
-   - **1.2** Comandos que modifican el estado (`park`, `link`, `isolate`, `use`, `docroot`,
-     `secure`, `db`, `wp`, `new`) y la descarga de binarios de PHP.
+   - **1.2 ✅** Comandos que modifican el estado (`park`, `forget`, `link`, `unlink`,
+     `isolate`, `unisolate`, `use`, `docroot`, `secure`, `unsecure`, `open`, `log`, `db`,
+     `wp`, `new`, `start/stop/restart`) y la descarga de binarios de PHP. La paridad cubre
+     una secuencia de 42 pasos (estado y archivos finales idénticos) y `db` contra el
+     MariaDB real. `new` (WordPress Multisite + HTTPS, Laravel, CodeIgniter) se probó en el
+     sistema real usando el vigilante instalado, sin sudo.
    - **1.3** `install`/`uninstall` y el daemon (IPC por socket, vigilancia y temporizador), que
      reemplaza a `cheka-watch.path`, `cheka-refresh.timer` y `.refresh-request`.
    - **1.4** `cheka-rs` reemplaza al script en el sistema y migra el estado a `cheka.toml`.
