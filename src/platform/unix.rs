@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -59,11 +60,21 @@ pub fn user_conf_dir(home: &Path) -> std::path::PathBuf {
     home.join(".config/cheka")
 }
 
-/// Comando que vuelve a ejecutar `exe args…` con privilegios (`sudo -- exe args…`).
-pub fn elevate_command(exe: &Path) -> Result<Command> {
+/// `sudo -- exe args…`
+fn sudo(exe: &Path, args: &[OsString]) -> Command {
     let mut cmd = Command::new("sudo");
-    cmd.arg("--").arg(exe);
-    Ok(cmd)
+    cmd.arg("--").arg(exe).args(args);
+    cmd
+}
+
+/// Ejecuta `exe args…` con privilegios y devuelve su código de salida.
+pub fn run_elevated(exe: &Path, args: &[OsString]) -> Result<i32> {
+    Ok(sudo(exe, args).status()?.code().unwrap_or(1))
+}
+
+/// Se reemplaza por `sudo -- exe args…`. Solo regresa si no se pudo ejecutar.
+pub fn exec_elevated(exe: &Path, args: &[OsString]) -> io::Error {
+    exec(&mut sudo(exe, args))
 }
 
 /// Sigue los logs como `tail -n 50 -F` (no regresa salvo error).

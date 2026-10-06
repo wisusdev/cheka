@@ -32,6 +32,7 @@ pub mod util;
 #[cfg(windows)]
 pub mod windows_setup;
 
+use std::ffi::OsString;
 use std::fmt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -103,12 +104,13 @@ impl Ctx {
     /// Ejecuta este mismo binario como root (`sudo cheka …`), o directamente si ya lo somos.
     pub fn run_as_root(&self, args: &[&str]) -> Result<()> {
         let exe = std::env::current_exe()?;
-        let status = if self.is_root() {
-            Command::new(exe).args(args).status()?
+        let ok = if self.is_root() {
+            Command::new(exe).args(args).status()?.success()
         } else {
-            platform::elevate_command(&exe)?.args(args).status()?
+            let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+            platform::run_elevated(&exe, &args)? == 0
         };
-        if !status.success() {
+        if !ok {
             return Err(Reported.into());
         }
         Ok(())
@@ -120,7 +122,7 @@ impl Ctx {
             return Ok(());
         }
         let exe = std::env::current_exe()?;
-        let err = platform::exec(platform::elevate_command(&exe)?.args(std::env::args_os().skip(1)));
-        Err(anyhow!("No pude ejecutar sudo: {err}"))
+        let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+        Err(anyhow!("No pude ejecutar sudo: {}", platform::exec_elevated(&exe, &args)))
     }
 }
