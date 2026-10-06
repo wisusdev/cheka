@@ -652,6 +652,8 @@ $("#link-form").addEventListener("submit", (e) => {
 
 state.tools = null;
 state.installingTools = false;
+state.toolInfo = {};     // id → { version, path, packages, size_bytes? }
+state.toolOpen = new Set();
 
 async function loadTools() {
   try {
@@ -661,6 +663,43 @@ async function loadTools() {
     return;
   }
   renderTools();
+  // Versiones y carpetas: tardan un par de segundos, se completan después.
+  try {
+    for (const info of await invoke("tools_info", { ids: [], size: false })) {
+      state.toolInfo[info.id] = { ...state.toolInfo[info.id], ...info, size_bytes: state.toolInfo[info.id]?.size_bytes };
+    }
+    renderTools();
+  } catch (e) {
+    console.warn(e);
+  }
+}
+
+async function toggleToolDetails(id) {
+  if (state.toolOpen.has(id)) state.toolOpen.delete(id);
+  else state.toolOpen.add(id);
+  renderTools();
+  if (state.toolOpen.has(id) && state.toolInfo[id]?.size_bytes == null) {
+    try {
+      const [info] = await invoke("tools_info", { ids: [id], size: true });
+      state.toolInfo[id] = { ...info, size_bytes: info.size_bytes ?? -1 };
+      renderTools();
+    } catch (e) {
+      toast(String(e), true);
+    }
+  }
+}
+
+function toolDetails(t) {
+  const info = state.toolInfo[t.id] ?? {};
+  const size = info.size_bytes == null ? "calculando…" : info.size_bytes < 0 ? "—" : humanBytes(info.size_bytes);
+  return h("div", { class: "details", onclick: (e) => e.preventDefault() },
+    h("dl", { class: "facts" },
+      h("dt", {}, "Versión"), h("dd", {}, info.version ?? "—"),
+      h("dt", {}, "Ubicación"), h("dd", {}, info.path ?? "—"),
+      h("dt", {}, "Tamaño"), h("dd", {}, size),
+      info.packages?.length && [h("dt", {}, "Paquetes"), h("dd", {}, info.packages.map((p) => `${p.name} ${p.version}`).join(", "))]),
+    info.path && h("button", { class: "btn small", onclick: (e) => { e.preventDefault(); invoke("open_path", { path: info.path }).catch((err) => toast(String(err), true)); } }, "Abrir carpeta"),
+    h("div", { class: "desc", style: "margin-top:6px" }, "Volver a instalarla la actualiza a la última versión."));
 }
 
 function selectedTools() {
@@ -694,11 +733,16 @@ function renderTools() {
             return h("label", { class: "tool" },
               box,
               h("div", {},
+                t.installed && h("button", { class: "btn small ghost more", onclick: (e) => { e.preventDefault(); toggleToolDetails(t.id); } },
+                  state.toolOpen.has(t.id) ? "Ocultar" : "Detalles"),
                 h("div", {}, h("span", { class: "name" }, t.name), " ",
                   t.installed && h("span", { class: "badge ok" }, "instalada"),
                   t.needs_root && !t.installed && h("span", { class: "badge", title: "Pide tu contraseña" }, "sistema")),
-                (t.description || t.installed) && h("div", { class: "desc" },
-                  t.description, t.installed && t.description ? " · " : "", t.installed ? "Volver a instalarla la actualiza" : "")));
+                t.installed && state.toolInfo[t.id] && h("div", { class: "meta", title: state.toolInfo[t.id].path ?? "" },
+                  h("span", { class: "ver" }, state.toolInfo[t.id].version ?? "?"),
+                  state.toolInfo[t.id].path ? ` · ${state.toolInfo[t.id].path}` : ""),
+                t.description && h("div", { class: "desc" }, t.description),
+                state.toolOpen.has(t.id) && toolDetails(t)));
           })))
     )
   );
@@ -734,6 +778,7 @@ listen("tools-done", ({ payload }) => {
   if (payload.failed.length) toast(`Con errores: ${names(payload.failed)}. Revisa la salida.`, true);
   if (payload.ok.length) toast(`Instalado: ${names(payload.ok)}. Abre una terminal nueva para cargar el PATH.`);
   for (const box of document.querySelectorAll("#tools-list input")) box.checked = false;
+  for (const id of [...payload.ok, ...payload.failed]) delete state.toolInfo[id]; // versión nueva
   loadTools();
 });
 

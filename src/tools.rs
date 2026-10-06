@@ -5,7 +5,7 @@
 //! resultado con una línea `::cheka-tool ok|fail <id>`; luego la parte del usuario corre
 //! como él (nvm, rustup y compañía deben quedar en su home, no en el de root).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, bail};
@@ -30,6 +30,15 @@ pub struct Tool {
     pub user: String,
     #[serde(default)]
     pub requires: Vec<String>,
+    /// Comando que imprime la versión (si falta: la del primer paquete).
+    #[serde(default)]
+    pub version: String,
+    /// Comando que imprime dónde está instalada.
+    #[serde(default)]
+    pub path: String,
+    /// Paquetes de apt (versión y tamaño sin ejecutar nada).
+    #[serde(default)]
+    pub packages: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -189,5 +198,149 @@ mod tests {
         assert_eq!(parse_marker(&marker(true, "go")), Some(("go".into(), true)));
         assert_eq!(parse_marker(&marker(false, "go")), Some(("go".into(), false)));
         assert_eq!(parse_marker("otra línea"), None);
+    }
+}
+
+// ------------------------------------------------------------------- detalles ----
+
+#[derive(Debug, Serialize)]
+pub struct PackageInfo {
+    pub name: String,
+    pub version: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ToolInfo {
+    pub id: String,
+    pub version: Option<String>,
+    pub path: Option<String>,
+    pub packages: Vec<PackageInfo>,
+    /// Solo con `--size`: suma de los paquetes, o lo que ocupa la carpeta.
+    pub size_bytes: Option<u64>,
+}
+
+/// Funciones para los comandos `version` y `path` del catálogo.
+const INFO_PREAMBLE: &str = r#"
+ver() { grep -oE '[0-9]+([.][0-9A-Za-z]+)+' | head -1; }
+bindir() { dirname "$(readlink -f "$(command -v "$1")")"; }
+export -f ver bindir
+export PATH="$HOME/.cargo/bin:/usr/local/go/bin:$HOME/.config/composer/vendor/bin:/opt/flutter/bin:$PATH"
+"#;
+
+/// Quita la época ("1:") y la revisión de Debian ("-0ubuntu1") de una versión de apt.
+fn upstream(v: &str) -> String {
+    let v = v.split_once(':').map_or(v, |(_, rest)| rest);
+    v.rsplit_once('-').map_or(v, |(up, _)| up).to_string()
+}
+
+/// Paquete → (versión, tamaño instalado en bytes).
+fn dpkg_info(packages: &[String]) -> BTreeMap<String, (String, u64)> {
+    if packages.is_empty() {
+        return BTreeMap::new();
+    }
+    let out = Command::new("dpkg-query")
+        .args(["-W", "-f=${Package}\t${Version}\t${Installed-Size}\n"])
+        .args(packages)
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    out.lines()
+        .filter_map(|l| {
+            let mut f = l.split('\t');
+            let (name, version, kib) = (f.next()?, f.next()?, f.next().unwrap_or("0"));
+            (!version.is_empty()).then(|| (name.to_string(), (version.to_string(), kib.parse::<u64>().unwrap_or(0) * 1024)))
+        })
+        .collect()
+}
+
+fn du(path: &str) -> Option<u64> {
+    let out = Command::new("timeout").args(["10", "du", "-sb", path]).stderr(Stdio::null()).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).split_whitespace().next()?.parse().ok()
+}
+
+/// Versión, carpeta y paquetes de las herramientas indicadas (o de todas las instaladas).
+pub fn info(ctx: &Ctx, ids: &[String], with_size: bool) -> Result<Vec<ToolInfo>> {
+    let tools: Vec<Tool> = if ids.is_empty() {
+        status(ctx).into_iter().filter(|s| s.installed).map(|s| s.tool).collect()
+    } else {
+        resolve_exact(ids)?
+    };
+    // Un solo bash para todos los comandos; cada uno con su propio límite de tiempo.
+    let mut script = String::from(INFO_PREAMBLE);
+    for t in &tools {
+        for (kind, cmd) in [("version", &t.version), ("path", &t.path)] {
+            if !cmd.trim().is_empty() {
+                let quoted = cmd.replace('\'', r"'\''");
+                script.push_str(&format!(
+                    "printf '%s\\t{kind}\\t%s\\n' '{}' \"$(timeout 5 bash -c '{quoted}' 2>/dev/null | head -1)\"\n",
+                    t.id
+                ));
+            }
+        }
+    }
+    let out = Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .env("HOME", &ctx.id.home)
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let mut values: BTreeMap<(String, String), String> = BTreeMap::new();
+    for line in out.lines() {
+        let mut f = line.splitn(3, '\t');
+        if let (Some(id), Some(kind), Some(v)) = (f.next(), f.next(), f.next())
+            && !v.trim().is_empty()
+        {
+            values.insert((id.to_string(), kind.to_string()), v.trim().to_string());
+        }
+    }
+    let all_pkgs: Vec<String> = tools.iter().flat_map(|t| t.packages.clone()).collect();
+    let dpkg = dpkg_info(&all_pkgs);
+
+    Ok(tools
+        .into_iter()
+        .map(|t| {
+            let packages: Vec<PackageInfo> = t
+                .packages
+                .iter()
+                .filter_map(|p| dpkg.get(p).map(|(v, _)| PackageInfo { name: p.clone(), version: v.clone() }))
+                .collect();
+            let version = values
+                .remove(&(t.id.clone(), "version".into()))
+                .or_else(|| packages.first().map(|p| upstream(&p.version)));
+            let path = values.remove(&(t.id.clone(), "path".into()));
+            let size_bytes = with_size.then(|| {
+                let from_pkgs: u64 = t.packages.iter().filter_map(|p| dpkg.get(p).map(|(_, s)| *s)).sum();
+                if from_pkgs > 0 { Some(from_pkgs) } else { path.as_deref().and_then(du) }
+            });
+            ToolInfo { id: t.id, version, path, packages, size_bytes: size_bytes.flatten() }
+        })
+        .collect())
+}
+
+/// Como `resolve`, pero sin agregar requisitos.
+fn resolve_exact(ids: &[String]) -> Result<Vec<Tool>> {
+    let all = catalog();
+    for id in ids {
+        if !all.iter().any(|t| &t.id == id) {
+            bail!("Herramienta desconocida: '{id}'");
+        }
+    }
+    Ok(all.into_iter().filter(|t| ids.contains(&t.id)).collect())
+}
+
+#[cfg(test)]
+mod info_tests {
+    use super::upstream;
+
+    #[test]
+    fn version_de_apt_limpia() {
+        assert_eq!(upstream("1:1.2.95.453.g0eeebbed"), "1.2.95.453.g0eeebbed");
+        assert_eq!(upstream("154.0.8037.97-1"), "154.0.8037.97");
+        assert_eq!(upstream("10.0.112-0ubuntu1~26.04.1"), "10.0.112");
+        assert_eq!(upstream("7:8.0.1-3ubuntu2"), "8.0.1");
+        assert_eq!(upstream("4215"), "4215");
     }
 }

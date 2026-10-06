@@ -132,6 +132,20 @@ async fn tools() -> Result<Value, String> {
     json(&["tools", "--json"])
 }
 
+/// Versión, carpeta y paquetes de herramientas (`size`: también lo que ocupan; es más lento).
+#[tauri::command]
+async fn tools_info(ids: Vec<String>, size: bool) -> Result<Value, String> {
+    if !ids.iter().all(|i| valid_tool_id(i)) {
+        return Err("Selección inválida".into());
+    }
+    let mut args = vec!["tools", "info", "--json"];
+    if size {
+        args.push("--size");
+    }
+    args.extend(ids.iter().map(String::as_str));
+    json(&args)
+}
+
 fn valid_tool_id(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
@@ -345,10 +359,13 @@ async fn open_url(app: AppHandle, url: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn open_path(app: AppHandle, path: String) -> Result<(), String> {
-    if !Path::new(&path).is_absolute() {
+    let p = Path::new(&path);
+    if !p.is_absolute() {
         return Err("Ruta inválida".into());
     }
-    app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
+    // Para un archivo (un binario, por ejemplo) se abre la carpeta que lo contiene.
+    let target = if p.is_dir() { p } else { p.parent().unwrap_or(p) };
+    app.opener().open_path(target.display().to_string(), None::<&str>).map_err(|e| e.to_string())
 }
 
 // ------------------------------------------------------------------- bandeja ----
@@ -410,6 +427,7 @@ fn main() {
             services,
             service_logs,
             tools,
+            tools_info,
             install_tools,
             read_log,
             run,

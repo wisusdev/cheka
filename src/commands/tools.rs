@@ -146,8 +146,35 @@ pub fn plan(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// `tools info [<id>…] [--size] [--json]`: versión, carpeta, paquetes (y tamaño con --size).
+pub fn info(ctx: &Ctx, args: &[String]) -> Result<()> {
+    let with_size = args.iter().any(|a| a == "--size");
+    let list = tools::info(ctx, &ids_of(args), with_size)?;
+    if args.iter().any(|a| a == "--json") {
+        println!("{}", serde_json::to_string_pretty(&list)?);
+        return Ok(());
+    }
+    let names: BTreeMap<String, String> = tools::catalog().into_iter().map(|t| (t.id, t.name)).collect();
+    let c = ui::colors();
+    for i in &list {
+        println!("{}{}{}  {}", c.bold, names.get(&i.id).map_or(i.id.as_str(), String::as_str), c.reset, i.version.as_deref().unwrap_or("?"));
+        if let Some(p) = &i.path {
+            println!("    {p}");
+        }
+        if !i.packages.is_empty() {
+            let pk: Vec<String> = i.packages.iter().map(|p| format!("{} {}", p.name, p.version)).collect();
+            println!("    apt: {}", pk.join(", "));
+        }
+        if let Some(b) = i.size_bytes {
+            println!("    {:.0} MB", b as f64 / (1u64 << 20) as f64);
+        }
+    }
+    Ok(())
+}
+
 pub fn tools(ctx: &Ctx, args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
+        Some("info") => info(ctx, &args[1..]),
         Some("plan") => plan(&args[1..]),
         None | Some("list") | Some("--json") => list(ctx, args),
         Some("install") => install(&args[1..]),
