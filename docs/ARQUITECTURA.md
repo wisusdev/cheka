@@ -9,6 +9,9 @@ igual que el script actual.
 
 > Las afirmaciones sobre macOS y Windows marcadas con **(verificar)** no se probaron. Lo marcado
 > con **(verificado)** se comprobó al escribir este documento (octubre de 2026).
+>
+> **Estado:** las fases 1 (Linux en Rust) y 3 (Windows, con paridad 1:1) están terminadas; la
+> 2 (macOS) sigue pendiente. El avance de cada hito está en §8.6.
 
 ---
 
@@ -578,7 +581,24 @@ password = "secret"
        PowerShell y `netstat`; Windows no tiene journal (los logs son archivos).
      - *UI:* el mismo panel; las acciones de administrador piden UAC (las pide `cheka`) en
        vez de `pkexec`, sin ventanas de consola, con `icon.ico`.
-4. **UI de bandeja (estilo PHP Monitor)** — en curso, crate `ui/` (`cheka-ui`, Tauri v2,
+   - **3.5 ✅ Instalador y publicación.**
+     - *Instalador:* NSIS generado por Tauri (`ui/tauri.windows.conf.json`): la UI
+       (`cheka-ui.exe`, `mainBinaryName` para no chocar con la CLI) y `cheka.exe` en Archivos
+       de programa, para todos los usuarios, en español. `ui/windows/hooks.nsh`: al actualizar
+       (si existe `etc\user`) corre `cheka install` con la versión nueva; al desinstalar,
+       `cheka uninstall` (proyectos, MariaDB y `%ProgramData%\cheka` se conservan).
+     - **Decisión:** el instalador **no** configura el sistema. Corre elevado y no sabría quién
+       es el dueño de los proyectos; al terminar abre la UI como el usuario (`RunAsUser`), que
+       muestra la configuración guiada (`setup_state`/`run_setup`): `cheka install` con UAC
+       una sola vez y una lista de pasos que se arma con los títulos `== … ==` de su salida.
+       En las actualizaciones el dueño ya está en `etc\user`, así que el hook sí puede.
+     - *CI* (`.github/workflows/ci.yml`): clippy y `cargo test` en Ubuntu (incluye la paridad
+       con `legacy/cheka.sh`) y Windows en cada PR.
+     - *Versiones* (`release.yml`): un tag `vX.Y.Z` publica en GitHub Releases el instalador,
+       `cheka.exe` suelto y el binario de Linux (compilado en Ubuntu 22.04 por la glibc), con
+       `SHA256SUMS.txt`. La versión sale del tag: el flujo la escribe en `Cargo.toml` y
+       `tauri.conf.json` antes de compilar.
+4. **UI de bandeja (estilo PHP Monitor)** — Linux y Windows, crate `ui/` (`cheka-ui`, Tauri v2,
    interfaz en HTML/CSS/JS sin frameworks). Ventana con sitios (abrir, HTTPS, versión de PHP,
    carpeta, logs, enlazar carpetas), versiones de PHP, servicios, asistente de `new` con la
    salida en vivo y logs; bandeja con acceso a cada sitio y a reiniciar servicios.
