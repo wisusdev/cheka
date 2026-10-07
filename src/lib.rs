@@ -2,10 +2,6 @@
 //! que el futuro daemon y la UI de bandeja reutilicen la misma lógica.
 
 pub mod commands;
-#[cfg(unix)]
-pub mod daemon;
-#[cfg(windows)]
-#[path = "daemon_windows.rs"]
 pub mod daemon;
 pub mod detect;
 pub mod identity;

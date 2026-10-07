@@ -1,6 +1,6 @@
 //! `install` / `uninstall` en Windows (administrador). Idempotentes. Descargan Apache
-//! Lounge (+ mod_fcgid) y PHP NTS a `%ProgramData%\cheka` y registran el servicio
-//! `cheka-apache`. Falta (hito 3.3): archivo `hosts`, mkcert, MariaDB y el daemon.
+//! Lounge (+ mod_fcgid), PHP NTS y mkcert a `%ProgramData%\cheka`, instalan MariaDB con
+//! winget y registran los servicios `cheka` (daemon) y `cheka-apache`.
 //! En modo prueba (`CHEKA_PREFIX`) no descargan nada ni tocan servicios ni el PATH.
 
 use std::fs;
@@ -74,6 +74,18 @@ fn remove_from_path(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Detiene un servicio si existe y está corriendo (espera a que termine).
+fn stop_service(name: &str) {
+    if crate::system::windows_service_state(name).is_some_and(|s| s != "inactive") {
+        let _ = powershell(&format!("Stop-Service -Name '{name}' -Force"));
+    }
+}
+
+fn addresses(host: &str) -> Vec<std::net::IpAddr> {
+    use std::net::ToSocketAddrs;
+    (host, 0).to_socket_addrs().map(|a| a.map(|s| s.ip()).collect()).unwrap_or_default()
+}
+
 pub fn install(ctx: &mut Ctx) -> anyhow::Result<()> {
     ctx.ensure_root()?;
     let l = ctx.layout.clone();
@@ -85,6 +97,11 @@ pub fn install(ctx: &mut Ctx) -> anyhow::Result<()> {
     }
 
     step("Archivos de cheka");
+    // Un daemon de una versión anterior podría no entender el estado: se detiene antes de
+    // reemplazar el binario y se reinicia al final.
+    if !test {
+        stop_service(crate::daemon::SERVICE_NAME);
+    }
     let exe = std::env::current_exe()?;
     let target = l.bin.join("cheka.exe");
     mkdir(&l.bin)?;
@@ -102,6 +119,10 @@ pub fn install(ctx: &mut Ctx) -> anyhow::Result<()> {
         mkdir(d)?;
     }
     write(&l.etc.join("user"), &format!("{}\n", ctx.id.user))?;
+    if !test {
+        // Para la ACL de la named pipe: solo el dueño de los proyectos (y administradores).
+        write(&l.etc.join("user-sid"), &format!("{}\n", windows_setup::user_sid(&ctx.id.user)?))?;
+    }
     userfs::mkdir(&ctx.id, &ctx.id.conf.join("certs"))?;
     let sites_dir = ctx.id.home.join("Sites");
     userfs::mkdir(&ctx.id, &sites_dir)?;
@@ -125,21 +146,71 @@ pub fn install(ctx: &mut Ctx) -> anyhow::Result<()> {
         windows_setup::php_install(ctx, &default_php)?;
     }
 
+    step("HTTPS local (mkcert)");
+    if test {
+        ui::info("Omitido en modo prueba");
+    } else {
+        windows_setup::install_mkcert(ctx)?;
+    }
+
     step("Apache (Apache Lounge + mod_fcgid)");
     windows_setup::install_apache(ctx)?;
     ui::ok(format!("Apache listo como servicio {APACHE_SERVICE}"));
 
-    step("Sitios");
+    step("Sitios y DNS");
     ctx.reload_state()?;
     refresh::run(ctx)?;
+    ui::ok(format!("Cada sitio se agrega solo a {}", l.hosts_file().display()));
+    if !test {
+        windows_setup::register_daemon(&target)?;
+        ctx.sys.enable(crate::daemon::SERVICE_NAME, true)?;
+    }
+    ui::ok("Daemon activo: las carpetas nuevas se publican solas, sin pedir permisos");
+
+    step("MariaDB");
+    if test {
+        ui::info("Omitido en modo prueba");
+    } else if let Err(e) = windows_setup::install_mariadb(ctx) {
+        // No es motivo para dejar a medias lo demás: se puede repetir `cheka install`.
+        ui::warn(format!("{e:#}"));
+        ui::warn("¿Otro MySQL/MariaDB (Laragon, XAMPP) usa el puerto 3306? Detenlo y repite 'cheka install'");
+    }
+
+    step("Verificación");
+    if test {
+        ui::info("Omitido en modo prueba");
+    } else {
+        if addresses(&format!("cheka-check.{TLD}")).iter().any(|ip| ip.is_loopback()) {
+            ui::ok(format!("*.{TLD} resuelve a 127.0.0.1 (archivo hosts)"));
+        } else {
+            ui::warn(format!("cheka-check.{TLD} no resuelve todavía: revisa {}", l.hosts_file().display()));
+        }
+        // El servicio tarda un momento en abrir la pipe.
+        let mut ok = false;
+        for _ in 0..20 {
+            if crate::ipc::call(&l.socket(), &crate::ipc::Request::Ping).is_ok_and(|r| r.ok) {
+                ok = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        if ok {
+            ui::ok("El daemon responde");
+        } else {
+            ui::warn(format!("El daemon no responde todavía: revisa {}", l.log_dir.join("cheka-daemon.log").display()));
+        }
+    }
 
     let c = ui::colors();
     println!();
-    println!("{}{}cheka está listo.{} Crea o clona un proyecto en {}", c.green, c.bold, c.reset, sites_dir.display());
-    ui::warn(format!(
-        "Todavía falta que *.{TLD} resuelva solo (hito 3.3). Mientras tanto, agrega cada sitio a \
-         C:\\Windows\\System32\\drivers\\etc\\hosts, p. ej.: 127.0.0.1 blog.{TLD}"
-    ));
+    println!(
+        "{}{}cheka está listo.{} Crea o clona un proyecto en {} y ábrelo en http://<carpeta>.{TLD}",
+        c.green,
+        c.bold,
+        c.reset,
+        sites_dir.display()
+    );
+    println!("Ayuda: cheka --help");
     Ok(())
 }
 
@@ -148,7 +219,12 @@ pub fn uninstall(ctx: &mut Ctx, args: &[String]) -> anyhow::Result<()> {
     let purge = args.first().is_some_and(|a| a == "--purge");
     let l = ctx.layout.clone();
     step("Desinstalando cheka");
+    if !l.is_test() {
+        stop_service(crate::daemon::SERVICE_NAME);
+        windows_setup::unregister_daemon()?;
+    }
     windows_setup::uninstall_apache(ctx)?;
+    windows_setup::remove_hosts_block(&l)?;
     if !l.is_test() {
         remove_from_path(&l.bin)?;
     }
@@ -164,6 +240,7 @@ pub fn uninstall(ctx: &mut Ctx, args: &[String]) -> anyhow::Result<()> {
             ctx.id.conf.display()
         ));
     }
-    ui::ok("Servicio de Apache eliminado. Tus proyectos no se tocaron.");
+    ui::ok("Servicios de cheka y Apache eliminados y archivo hosts limpio. MariaDB y la CA de mkcert se conservan.");
+    ui::ok("Tus proyectos no se tocaron.");
     Ok(())
 }

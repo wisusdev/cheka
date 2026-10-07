@@ -34,6 +34,8 @@ pub fn run(ctx: &Ctx) -> Result<String> {
     let staging = tempfile::tempdir()?;
     let mut versions = BTreeSet::new();
     let mut count = 0;
+    #[cfg(windows)]
+    let mut hostnames = Vec::new();
 
     for site in sites::list(st) {
         let path_str = site.path.display().to_string();
@@ -65,6 +67,14 @@ pub fn run(ctx: &Ctx) -> Result<String> {
         write(&staging.path().join(format!("{}.conf", site.name)), &conf)?;
         versions.insert(v);
         count += 1;
+        #[cfg(windows)]
+        hostnames.push(site.name.clone());
+    }
+
+    // Windows: cada sitio en el archivo hosts (no hay resolver por sufijo como en Linux).
+    #[cfg(windows)]
+    if let Err(e) = crate::windows_setup::sync_hosts(l, &hostnames) {
+        ui::warn(format!("No pude actualizar el archivo hosts: {e:#}"));
     }
 
     // En Windows no hay unidades de PHP: mod_fcgid arranca php-cgi.exe dentro de Apache.

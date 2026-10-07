@@ -542,7 +542,21 @@ password = "secret"
      extensiones comunes se activan solas; `php:ext` aún no aplica en Windows. Probado con
      Apache en primer plano (modo prefijo): dos versiones a la vez, PATH_INFO, estáticos, 404,
      subdominios, docroot de Laravel, comodín, `localhost`, HTTPS saliente y `php:ini`.
-   - **3.3** Servicio de Windows + named pipe (daemon), archivo `hosts`, mkcert, MariaDB.
+   - **3.3 ✅** El daemon es el servicio `cheka` (LocalSystem, crate `windows-service`) con
+     el mismo código que en Linux (`daemon.rs`); solo cambia el transporte: named pipe
+     `\\.\pipe\cheka` con ACL para SYSTEM, administradores y el SID del dueño (lo guarda
+     `install` en `etc\user-sid`; equivale a `SO_PEERCRED`). Su salida va a
+     `logs\cheka-daemon.log`. `refresh` mantiene un bloque de cheka en el archivo `hosts`
+     (un nombre por sitio más `cheka-check.test` para `status`; sin comodines, así que los
+     subsitios de Multisite por subdominio necesitan `cheka link`). mkcert: CA creada con
+     `TRUST_STORES=nss` e instalada en el almacén de la **máquina** con `certutil` (sin el
+     diálogo del almacén del usuario; Chrome, Edge y Firefox la aceptan); Apache escucha en
+     443. MariaDB con winget (servicio `MariaDB`, root sin contraseña y solo local); como no
+     hay `unix_socket`, `cheka db` usa el usuario de `[db]` por 127.0.0.1, y exporta sin
+     comprimir (Windows no trae gzip). Sin `sudo` en modo "en línea", la elevación usa UAC y
+     muestra la salida en la misma terminal. Probado en modo prefijo: API por la pipe, carpeta
+     nueva publicada sola, `link` sin permisos, `hosts`, `secure` con HTTPS válido (sitio y
+     subdominio) e identidad del usuario vista desde SYSTEM.
 4. **UI de bandeja (estilo PHP Monitor)** — en curso, crate `ui/` (`cheka-ui`, Tauri v2,
    interfaz en HTML/CSS/JS sin frameworks). Ventana con sitios (abrir, HTTPS, versión de PHP,
    carpeta, logs, enlazar carpetas), versiones de PHP, servicios, asistente de `new` con la

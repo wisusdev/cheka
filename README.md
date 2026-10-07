@@ -14,10 +14,12 @@ versión de PHP que elijas por proyecto, MariaDB y HTTPS local.
 > las pruebas de paridad. Para la arquitectura interna y el plan para macOS y Windows,
 > consulta [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).
 >
-> **Windows (en desarrollo):** `cheka install` (como administrador) descarga Apache Lounge con
-> `mod_fcgid` y PHP de windows.php.net, y publica los sitios con la versión de PHP de cada uno.
-> Todavía faltan el DNS automático de `*.test` (por ahora, agrega cada sitio al archivo
-> `hosts`), HTTPS, MariaDB y el daemon. El avance está en el hito 3 de `docs/ARQUITECTURA.md` §8.6.
+> **Windows (beta):** `cheka install` (pide permisos con UAC) descarga Apache Lounge con
+> `mod_fcgid`, PHP de windows.php.net y mkcert, instala MariaDB con winget y deja el daemon
+> como servicio: las carpetas de `%USERPROFILE%\Sites` se publican solas y cada sitio se
+> agrega al archivo `hosts`. Diferencias con Linux: sin comodines DNS (los subsitios de
+> Multisite por subdominio necesitan `cheka link`), `cheka db` usa el usuario de `[db]` y
+> `php:ext` aún no aplica. Detalles en el hito 3 de `docs/ARQUITECTURA.md` §8.6.
 
 ---
 

@@ -262,6 +262,245 @@ pub fn php_install(ctx: &Ctx, v: &str) -> Result<()> {
     Ok(())
 }
 
+// ------------------------------------------------------------------- MariaDB ----
+
+pub const MARIADB_SERVICE: &str = "MariaDB";
+
+/// `mariadb.exe` / `mariadb-dump.exe` de la instalación más reciente (`C:\Program Files\
+/// MariaDB X.Y\bin`), o el nombre a secas para buscarlo en el PATH.
+pub fn mariadb_bin(program: &str) -> PathBuf {
+    let exe = format!("{program}.exe");
+    let base = PathBuf::from(std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into()));
+    let mut dirs: Vec<PathBuf> = fs::read_dir(&base)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("MariaDB ")))
+        .filter(|p| p.join("bin").join(&exe).is_file())
+        .collect();
+    // "MariaDB 13.0" > "MariaDB 11.8": comparar la versión numéricamente.
+    dirs.sort_by_key(|p| {
+        p.file_name()
+            .map(|n| n.to_string_lossy().trim_start_matches("MariaDB ").split('.').map(|x| x.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>())
+            .unwrap_or_default()
+    });
+    dirs.last().map(|d| d.join("bin").join(&exe)).unwrap_or_else(|| PathBuf::from(exe))
+}
+
+/// Instala MariaDB con winget si no hay un servicio `MariaDB`, y crea el usuario de `[db]`
+/// para los proyectos. El MSI deja a `root` sin contraseña y solo local.
+pub fn install_mariadb(ctx: &Ctx) -> Result<()> {
+    if system::windows_service_state(MARIADB_SERVICE).is_none() {
+        ui::info("Instalando MariaDB con winget (puede tardar unos minutos)…");
+        let ok = Command::new("winget")
+            .args(["install", "-e", "--id", "MariaDB.Server", "--silent"])
+            .args(["--accept-source-agreements", "--accept-package-agreements"])
+            .args(["--custom", &format!("SERVICENAME={MARIADB_SERVICE} UTF8=1")])
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok || system::windows_service_state(MARIADB_SERVICE).is_none() {
+            bail!("No pude instalar MariaDB con winget (prueba: winget install MariaDB.Server)");
+        }
+    }
+    if !ctx.sys.is_active(MARIADB_SERVICE) {
+        ctx.sys.enable(MARIADB_SERVICE, true)?;
+    }
+    let (user, pass) = (&ctx.state.db_user, &ctx.state.db_password);
+    if [user, pass].iter().any(|v| v.contains(['\'', '\\']) || v.is_empty()) {
+        bail!("[db] en cheka.toml: el usuario y la contraseña no pueden estar vacíos ni tener ' o \\");
+    }
+    let sql = format!(
+        "CREATE USER IF NOT EXISTS '{user}'@'localhost' IDENTIFIED BY '{pass}';\n\
+         CREATE USER IF NOT EXISTS '{user}'@'127.0.0.1' IDENTIFIED BY '{pass}';\n\
+         GRANT ALL PRIVILEGES ON *.* TO '{user}'@'localhost' WITH GRANT OPTION;\n\
+         GRANT ALL PRIVILEGES ON *.* TO '{user}'@'127.0.0.1' WITH GRANT OPTION;\n\
+         FLUSH PRIVILEGES;\n"
+    );
+    let ok = Command::new(mariadb_bin("mariadb"))
+        .args(["-u", "root", "-h", "127.0.0.1", "-e", &sql])
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        bail!(
+            "No pude crear el usuario '{user}' en MariaDB como root sin contraseña. Si tu root tiene \
+             contraseña, créalo a mano:\n  mariadb -u root -p -e \"CREATE USER '{user}'@'localhost' IDENTIFIED BY '{pass}'; \
+             GRANT ALL ON *.* TO '{user}'@'localhost' WITH GRANT OPTION;\""
+        );
+    }
+    ui::ok(format!("MariaDB listo; usuario '{user}'/'{pass}' para tus proyectos"));
+    Ok(())
+}
+
+// -------------------------------------------------------------------- mkcert ----
+
+pub const MKCERT_URL: &str = "https://dl.filippo.io/mkcert/latest?for=windows/amd64";
+
+/// CA de mkcert del usuario (`%LOCALAPPDATA%\mkcert`); la misma que usa `cheka secure`.
+fn caroot(ctx: &Ctx) -> PathBuf {
+    ctx.id.home.join(r"AppData\Local\mkcert")
+}
+
+/// Descarga mkcert, crea la CA del usuario y la instala en el almacén de la **máquina**
+/// (`certutil`, como administrador): así no aparece el diálogo de confirmación del almacén
+/// del usuario, y Chrome, Edge y Firefox (que usa el almacén de Windows) la aceptan.
+pub fn install_mkcert(ctx: &Ctx) -> Result<()> {
+    let l = &ctx.layout;
+    let exe = l.bin.join("mkcert.exe");
+    if !exe.is_file() {
+        ui::info("Descargando mkcert…");
+        download(MKCERT_URL, &exe)?;
+    }
+    let root = caroot(ctx);
+    mkdir(&root)?;
+    // TRUST_STORES=nss: crea la CA sin tocar el almacén del usuario (no hay NSS en Windows).
+    let ok = Command::new(&exe)
+        .arg("-install")
+        .env("CAROOT", &root)
+        .env("TRUST_STORES", "nss")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    let ca = root.join("rootCA.pem");
+    if !ok || !ca.is_file() {
+        bail!("mkcert no pudo crear la CA local en {}", root.display());
+    }
+    let out = Command::new(system32("certutil.exe")).args(["-addstore", "-f", "Root"]).arg(&ca).output()?;
+    if !out.status.success() {
+        bail!("certutil no pudo instalar la CA: {}", String::from_utf8_lossy(&out.stdout).trim());
+    }
+    ui::ok("CA local de mkcert instalada en Windows (Chrome, Edge y Firefox)");
+    Ok(())
+}
+
+// ------------------------------------------------------------ daemon (servicio) ----
+
+/// Registra (o actualiza) el servicio `cheka`: `cheka.exe daemon` como LocalSystem, con
+/// arranque automático. No lo inicia.
+pub fn register_daemon(exe: &Path) -> Result<()> {
+    use windows_service::service::{ServiceAccess, ServiceErrorControl, ServiceInfo, ServiceStartType, ServiceType};
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+    let name = crate::daemon::SERVICE_NAME;
+    let manager =
+        ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
+    let info = ServiceInfo {
+        name: name.into(),
+        display_name: "cheka".into(),
+        service_type: ServiceType::OWN_PROCESS,
+        start_type: ServiceStartType::AutoStart,
+        error_control: ServiceErrorControl::Normal,
+        executable_path: exe.to_path_buf(),
+        launch_arguments: vec!["daemon".into()],
+        dependencies: vec![],
+        account_name: None, // LocalSystem
+        account_password: None,
+    };
+    let access = ServiceAccess::QUERY_STATUS | ServiceAccess::CHANGE_CONFIG | ServiceAccess::START | ServiceAccess::STOP;
+    let service = match manager.open_service(name, access) {
+        Ok(s) => {
+            s.change_config(&info)?;
+            s
+        }
+        Err(_) => manager.create_service(&info, access)?,
+    };
+    service.set_description("cheka: publica los sitios de ~/Sites y atiende a la CLI")?;
+    Ok(())
+}
+
+/// Elimina el servicio `cheka` (detenido antes por el llamador).
+pub fn unregister_daemon() -> Result<()> {
+    use windows_service::service::ServiceAccess;
+    use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    if let Ok(s) = manager.open_service(crate::daemon::SERVICE_NAME, ServiceAccess::DELETE) {
+        s.delete()?;
+    }
+    Ok(())
+}
+
+/// SID del usuario (para la ACL de la named pipe del daemon).
+pub fn user_sid(user: &str) -> Result<String> {
+    let script = format!(
+        "(New-Object System.Security.Principal.NTAccount('{}')).Translate([System.Security.Principal.SecurityIdentifier]).Value",
+        user.replace('\'', "''")
+    );
+    let out = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output()?;
+    let sid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() || !sid.starts_with("S-1-") {
+        bail!("No pude obtener el SID de '{user}'");
+    }
+    Ok(sid)
+}
+
+// --------------------------------------------------------------------- hosts ----
+
+const HOSTS_BEGIN: &str = "# >>> cheka (generado por cheka, no editar este bloque)";
+const HOSTS_END: &str = "# <<< cheka";
+
+/// El archivo `hosts` sin el bloque de cheka.
+fn hosts_without_block(text: &str) -> String {
+    match (text.find(HOSTS_BEGIN), text.find(HOSTS_END)) {
+        (Some(a), Some(b)) if b > a => {
+            let mut s = text[..a].trim_end().to_string();
+            let rest = text[b + HOSTS_END.len()..].trim_start_matches(['\r', '\n']);
+            if !rest.is_empty() {
+                s.push_str("\r\n");
+                s.push_str(rest);
+            }
+            s
+        }
+        _ => text.trim_end().to_string(),
+    }
+}
+
+/// Windows no tiene un resolver por sufijo: cada sitio va al archivo `hosts` (sin
+/// comodines, así que los subsitios de Multisite necesitan `cheka link` propio).
+/// `cheka-check.test` sirve para que `cheka status` compruebe que funciona.
+/// Devuelve si cambió el archivo.
+pub fn sync_hosts(l: &Layout, sites: &[String]) -> Result<bool> {
+    let path = l.hosts_file();
+    let current = match fs::read(&path) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map_err(|_| anyhow!("{} no está en UTF-8; no lo modifico", path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("No pude leer {}", path.display())),
+    };
+    let mut text = hosts_without_block(&current);
+    let mut names: Vec<String> = sites.iter().map(|s| format!("{s}.{}", crate::layout::TLD)).collect();
+    names.insert(0, format!("cheka-check.{}", crate::layout::TLD));
+    if !text.is_empty() {
+        text.push_str("\r\n\r\n");
+    }
+    text.push_str(HOSTS_BEGIN);
+    text.push_str("\r\n");
+    for n in &names {
+        text.push_str(&format!("127.0.0.1 {n}\r\n"));
+    }
+    text.push_str(HOSTS_END);
+    text.push_str("\r\n");
+    if text == current {
+        return Ok(false);
+    }
+    if let Some(dir) = path.parent() {
+        mkdir(dir)?;
+    }
+    write(&path, &text)?;
+    Ok(true)
+}
+
+/// Quita el bloque de cheka del archivo `hosts` (`uninstall`).
+pub fn remove_hosts_block(l: &Layout) -> Result<()> {
+    let path = l.hosts_file();
+    if let Ok(current) = fs::read_to_string(&path) {
+        let text = hosts_without_block(&current) + "\r\n";
+        if text != current {
+            write(&path, &text)?;
+        }
+    }
+    Ok(())
+}
+
 // -------------------------------------------------------------------- Apache ----
 
 pub fn apache_dir(layout: &Layout) -> PathBuf {
@@ -425,4 +664,40 @@ pub fn uninstall_apache(ctx: &Ctx) -> Result<()> {
         bail!("No pude eliminar el servicio {APACHE_SERVICE}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hosts_solo_toca_su_bloque() {
+        let tmp = tempfile::tempdir().unwrap();
+        let l = Layout::with_prefix(tmp.path().display().to_string());
+        let path = l.hosts_file();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let original = "# hosts de Windows\r\n127.0.0.1 mi-cosa.local\r\n";
+        fs::write(&path, original).unwrap();
+
+        assert!(sync_hosts(&l, &["blog".into(), "tienda".into()]).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(original.trim_end()));
+        assert!(text.contains("127.0.0.1 cheka-check.test\r\n127.0.0.1 blog.test\r\n127.0.0.1 tienda.test\r\n"));
+        // idempotente
+        assert!(!sync_hosts(&l, &["blog".into(), "tienda".into()]).unwrap());
+        // un sitio menos
+        assert!(sync_hosts(&l, &["blog".into()]).unwrap());
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("tienda.test"));
+        assert_eq!(text.matches(HOSTS_BEGIN).count(), 1);
+        // lo que el usuario agregue después del bloque se conserva
+        fs::write(&path, format!("{text}127.0.0.1 despues.local\r\n")).unwrap();
+        sync_hosts(&l, &[]).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("despues.local") && !text.contains("blog.test"));
+        // uninstall deja lo del usuario
+        remove_hosts_block(&l).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text, "# hosts de Windows\r\n127.0.0.1 mi-cosa.local\r\n127.0.0.1 despues.local\r\n");
+    }
 }

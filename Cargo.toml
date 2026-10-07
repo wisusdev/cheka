@@ -23,6 +23,10 @@ toml = "1.1.6"
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", features = ["user", "fs", "socket"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8.1"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO"] }
+
 [workspace]
 members = ["ui"]
 # `cargo build`/`cargo test` en la raíz compilan solo el núcleo y la CLI; la UI (Tauri)

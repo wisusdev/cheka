@@ -148,7 +148,8 @@ pub fn docroot(ctx: &mut Ctx, args: &[String]) -> Result<()> {
 
 /// Certificado local para `sitio.test` y `*.sitio.test`, y marca el sitio como seguro.
 pub fn make_cert(ctx: &mut Ctx, name: &str) -> Result<()> {
-    let mkcert = which("mkcert").ok_or_else(|| anyhow!("mkcert no está instalado (ejecuta: sudo cheka install)"))?;
+    let hint = if cfg!(windows) { "cheka install" } else { "sudo cheka install" };
+    let mkcert = which("mkcert").ok_or_else(|| anyhow!("mkcert no está instalado (ejecuta: {hint})"))?;
     userfs::mkdir(&ctx.id, &ctx.state.conf.join("certs"))?;
     let (cert, key) = (ctx.state.cert(name), ctx.state.cert_key(name));
     let ok = Command::new(mkcert)

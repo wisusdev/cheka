@@ -81,8 +81,31 @@ impl Layout {
     }
 
     /// Socket del daemon (API para la CLI y la futura UI).
+    #[cfg(unix)]
     pub fn socket(&self) -> PathBuf {
         self.run_dir.join("cheka.sock")
+    }
+
+    /// Windows: named pipe del daemon. En modo prueba, una distinta por prefijo.
+    #[cfg(windows)]
+    pub fn socket(&self) -> PathBuf {
+        use std::hash::{Hash, Hasher};
+        if self.prefix.is_empty() {
+            return PathBuf::from(r"\\.\pipe\cheka");
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.prefix.hash(&mut h);
+        PathBuf::from(format!(r"\\.\pipe\cheka-prueba-{:016x}", h.finish()))
+    }
+
+    /// Windows: archivo `hosts` que mantiene `refresh` (en modo prueba, dentro del prefijo).
+    #[cfg(windows)]
+    pub fn hosts_file(&self) -> PathBuf {
+        if self.is_test() {
+            return self.etc.join("hosts");
+        }
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        PathBuf::from(root).join(r"System32\drivers\etc\hosts")
     }
 
     /// Modo prueba: sin servicios, sin `apache2ctl`, sin sudo.

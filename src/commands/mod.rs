@@ -107,14 +107,18 @@ pub fn php(ctx: &Ctx, args: Vec<OsString>) -> Result<()> {
     Err(anyhow!("No pude ejecutar {}: {}", bin.display(), exec(Command::new(&bin).args(args))))
 }
 
+/// Script de Composer para pasarle al PHP del sitio. En Windows el comando es
+/// `composer.bat`; lo que PHP necesita es el `composer.phar` de al lado.
+pub fn composer_script() -> Option<PathBuf> {
+    #[cfg(windows)]
+    return crate::util::find_in_path("composer.phar");
+    #[cfg(unix)]
+    which("composer")
+}
+
 pub fn composer(ctx: &Ctx, args: Vec<OsString>) -> Result<()> {
     let bin = current_cli(ctx)?;
-    // En Windows el ejecutable es composer.bat; el PHP de cheka necesita el .phar de al lado.
-    #[cfg(windows)]
-    let composer = crate::util::find_in_path("composer.phar");
-    #[cfg(unix)]
-    let composer = which("composer");
-    let composer = composer.ok_or_else(|| anyhow!("Composer no está instalado"))?;
+    let composer = composer_script().ok_or_else(|| anyhow!("Composer no está instalado"))?;
     Err(anyhow!("No pude ejecutar composer: {}", exec(Command::new(&bin).arg(composer).args(args))))
 }
 

@@ -78,11 +78,25 @@ pub fn current_user_name() -> Result<String> {
     env_nonempty("USERNAME").ok_or_else(|| anyhow!("No encuentro el usuario actual (USERNAME)"))
 }
 
-/// Carpeta de perfiles (`C:\Users`), a partir del perfil actual o de `PUBLIC`.
+/// Carpeta de perfiles (`C:\Users`). Se lee del registro porque el servicio corre como
+/// SYSTEM, cuyo perfil está en `C:\Windows\system32\config\systemprofile`.
 fn profiles_dir() -> Option<PathBuf> {
-    env_nonempty("USERPROFILE")
-        .or_else(|| env_nonempty("PUBLIC"))
-        .and_then(|p| PathBuf::from(p).parent().map(Path::to_path_buf))
+    let from_registry = Command::new("reg.exe")
+        .args(["query", r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList", "/v", "ProfilesDirectory"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout).lines().find(|l| l.contains("ProfilesDirectory")).and_then(|l| {
+                // "    ProfilesDirectory    REG_EXPAND_SZ    %SystemDrive%\Users"
+                let value = l.split("REG_EXPAND_SZ").nth(1).or_else(|| l.split("REG_SZ").nth(1))?.trim();
+                let drive = env_nonempty("SystemDrive").unwrap_or_else(|| "C:".into());
+                Some(PathBuf::from(value.replace("%SystemDrive%", &drive)))
+            })
+        });
+    from_registry
+        .filter(|p| p.is_dir())
+        .or_else(|| env_nonempty("PUBLIC").and_then(|p| PathBuf::from(p).parent().map(Path::to_path_buf)))
 }
 
 pub fn user_info(name: &str) -> Result<UserInfo> {

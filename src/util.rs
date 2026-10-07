@@ -21,10 +21,16 @@ pub fn canonicalize_lenient(p: &Path) -> Option<PathBuf> {
 /// Busca un ejecutable en el PATH (`command -v`).
 pub fn which(name: impl AsRef<OsStr>) -> Option<PathBuf> {
     let name = name.as_ref();
+    // Windows: `mkcert` también encuentra `mkcert.exe` (como hace la terminal con PATHEXT).
+    let names: Vec<std::ffi::OsString> = if cfg!(windows) && Path::new(name).extension().is_none() {
+        ["exe", "cmd", "bat"].iter().map(|e| Path::new(name).with_extension(e).into_os_string()).collect()
+    } else {
+        vec![name.to_os_string()]
+    };
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
-        .map(|d| d.join(name))
+        .flat_map(|d| names.iter().map(move |n| d.join(n)))
         .find(|c| c.is_file() && is_executable(c))
 }
 

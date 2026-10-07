@@ -2,6 +2,10 @@
 ServerName localhost
 LoadModule fcgid_module modules/mod_fcgid.so
 
+# HTTPS local (cheka secure): certificados de mkcert por sitio.
+Listen 443
+SSLSessionCache "shmcb:logs/ssl_scache(512000)"
+
 # PHP con mod_fcgid (Windows no tiene PHP-FPM). mod_fcgid arranca php-cgi.exe con un
 # entorno vacío: sin SystemRoot ni TEMP fallan OpenSSL, cURL y las subidas de archivos.
 FcgidIOTimeout 600
