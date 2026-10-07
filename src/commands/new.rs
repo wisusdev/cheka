@@ -6,12 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow, bail};
-use nix::unistd::geteuid;
 use regex::{NoExpand, Regex};
 
 use super::{db, ensure_php, ensure_wpcli, site::make_cert};
 use crate::layout::TLD;
-use crate::util::{is_executable, which};
+use crate::util::is_executable;
 use crate::{Ctx, Reported, php, refresh, sites, ui};
 
 const USAGE: &str = "Uso: cheka new <wordpress|laravel|codeigniter|php> <nombre> [--php=8.2] [--secure] [--multisite[=subdominios]] [--locale=es_MX]";
@@ -51,7 +50,7 @@ fn run(cmd: &mut Command, what: &str) -> Result<()> {
 }
 
 pub fn new(ctx: &mut Ctx, args: &[String]) -> Result<()> {
-    if geteuid().is_root() {
+    if crate::platform::is_root() {
         bail!("Ejecuta 'cheka new' con tu usuario, sin sudo");
     }
     if args.len() < 2 {
@@ -138,8 +137,8 @@ pub fn new(ctx: &mut Ctx, args: &[String]) -> Result<()> {
         }
         match ty {
             Type::Wordpress => wordpress(ctx, &plan),
-            Type::Laravel => laravel(&plan),
-            Type::Codeigniter => codeigniter(&plan),
+            Type::Laravel => laravel(ctx, &plan),
+            Type::Codeigniter => codeigniter(ctx, &plan),
             Type::Php => plain(&plan),
         }
     })();
@@ -211,7 +210,7 @@ fn wordpress(ctx: &Ctx, p: &Plan) -> Result<Outcome> {
     };
     ui::info(format!("Descargando WordPress ({})…", p.locale));
     run(&mut wp(&["core", "download", &format!("--locale={}", p.locale)]), "wp core download")?;
-    db::create(&p.db)?;
+    db::create(ctx, &p.db)?;
 
     let mut cfg = wp(&[
         "config",
@@ -261,7 +260,7 @@ fn wordpress(ctx: &Ctx, p: &Plan) -> Result<Outcome> {
 // ------------------------------------------------------ Laravel / CodeIgniter ----
 
 fn composer() -> Result<PathBuf> {
-    which("composer").ok_or_else(|| anyhow!("Composer no está instalado"))
+    super::composer_script().ok_or_else(|| anyhow!("Composer no está instalado"))
 }
 
 fn create_project(p: &Plan, package: &str) -> Result<()> {
@@ -297,10 +296,10 @@ fn set_ci_env(file: &Path, key: &str, val: &str) -> Result<()> {
     set_line(file, &format!("{} *=", regex::escape(key)), &format!("{key} = {val}"))
 }
 
-fn laravel(p: &Plan) -> Result<Outcome> {
+fn laravel(ctx: &Ctx, p: &Plan) -> Result<Outcome> {
     ui::info("Creando proyecto Laravel con Composer…");
     create_project(p, "laravel/laravel")?;
-    db::create(&p.db)?;
+    db::create(ctx, &p.db)?;
     let env = p.dir.join(".env");
     for (k, v) in [
         ("APP_URL", p.url.as_str()),
@@ -322,10 +321,10 @@ fn laravel(p: &Plan) -> Result<Outcome> {
     Ok(Outcome { notes: format!("Proyecto en {} (.env apuntando a MariaDB '{}')", p.dir.display(), p.db), has_db: true })
 }
 
-fn codeigniter(p: &Plan) -> Result<Outcome> {
+fn codeigniter(ctx: &Ctx, p: &Plan) -> Result<Outcome> {
     ui::info("Creando proyecto CodeIgniter 4 con Composer…");
     create_project(p, "codeigniter4/appstarter")?;
-    db::create(&p.db)?;
+    db::create(ctx, &p.db)?;
     let env = p.dir.join(".env");
     fs::copy(p.dir.join("env"), &env)?;
     let base_url = format!("'{}/'", p.url);

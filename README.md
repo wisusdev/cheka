@@ -13,6 +13,13 @@ versión de PHP que elijas por proyecto, MariaDB y HTTPS local.
 > La versión original en bash (0.1.0) se conserva en `legacy/cheka.sh` como referencia para
 > las pruebas de paridad. Para la arquitectura interna y el plan para macOS y Windows,
 > consulta [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).
+>
+> **Windows (beta):** `cheka install` (pide permisos con UAC) descarga Apache Lounge con
+> `mod_fcgid`, PHP de windows.php.net y mkcert, instala MariaDB con winget y deja el daemon
+> como servicio: las carpetas de `%USERPROFILE%\Sites` se publican solas y cada sitio se
+> agrega al archivo `hosts`. Diferencias con Linux: sin comodines DNS (los subsitios de
+> Multisite por subdominio necesitan `cheka link`), `cheka db` usa el usuario de `[db]` y
+> `php:ext` aún no aplica. Detalles en el hito 3 de `docs/ARQUITECTURA.md` §8.6.
 
 ---
 

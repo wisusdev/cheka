@@ -5,13 +5,17 @@ use std::collections::BTreeSet;
 use std::fs::{self, File};
 
 use anyhow::{Context, Result, bail};
-use nix::fcntl::{Flock, FlockArg};
 
 use crate::Ctx;
 use crate::detect::detect;
 use crate::render::{self, Vhost};
 use crate::util::{conf_files, copy_files, dirs_equal, mkdir, write, write_mode};
 use crate::{ipc, php, phpconf, sites, ui};
+
+#[cfg(unix)]
+const APACHE: &str = "apache2";
+#[cfg(windows)]
+const APACHE: &str = crate::windows_setup::APACHE_SERVICE;
 
 /// Resultado visible para quien pidió el refresh sin sudo (lo lee `request_refresh`).
 fn record(ctx: &Ctx, msg: &str) -> Result<()> {
@@ -23,13 +27,15 @@ pub fn run(ctx: &Ctx) -> Result<String> {
     mkdir(&l.apache_sites)?;
     mkdir(&l.run_dir)?;
     let lock = File::create(l.run_dir.join("refresh.lock"))?;
-    let _lock = Flock::lock(lock, FlockArg::LockExclusive).map_err(|(_, e)| e).context("flock")?;
+    lock.lock().context("flock")?; // se libera al cerrar el archivo
 
     let st = &ctx.state;
     let def = st.default_php();
     let staging = tempfile::tempdir()?;
     let mut versions = BTreeSet::new();
     let mut count = 0;
+    #[cfg(windows)]
+    let mut hostnames = Vec::new();
 
     for site in sites::list(st) {
         let path_str = site.path.display().to_string();
@@ -61,24 +67,44 @@ pub fn run(ctx: &Ctx) -> Result<String> {
         write(&staging.path().join(format!("{}.conf", site.name)), &conf)?;
         versions.insert(v);
         count += 1;
+        #[cfg(windows)]
+        hostnames.push(site.name.clone());
     }
 
-    for v in &versions {
-        let unit = php::unit(v);
-        if !ctx.sys.is_active(&unit) && ctx.sys.enable(&unit, true).is_err() {
-            ui::warn(format!("No pude iniciar PHP {v}"));
+    // Windows: cada sitio en el archivo hosts (no hay resolver por sufijo como en Linux).
+    #[cfg(windows)]
+    if let Err(e) = crate::windows_setup::sync_hosts(l, &hostnames) {
+        ui::warn(format!("No pude actualizar el archivo hosts: {e:#}"));
+    }
+
+    // En Windows no hay unidades de PHP: mod_fcgid arranca php-cgi.exe dentro de Apache.
+    if cfg!(unix) {
+        for v in &versions {
+            let unit = php::unit(v);
+            if !ctx.sys.is_active(&unit) && ctx.sys.enable(&unit, true).is_err() {
+                ui::warn(format!("No pude iniciar PHP {v}"));
+            }
         }
     }
     // Ajustes y extensiones de cada PHP (cheka.toml [php."X.Y"]); solo se reinicia el que cambió.
     let mut php_notes = Vec::new();
+    let mut restart_apache = false;
     for v in php::SUPPORTED.iter().filter(|v| php::installed(l, v)) {
         if phpconf::apply(ctx, v)? {
-            let unit = php::unit(v);
-            if ctx.sys.is_active(&unit) {
-                ctx.sys.restart(&unit)?;
+            if cfg!(windows) {
+                // los php-cgi.exe leen el php.ini al arrancar: hay que renovarlos
+                restart_apache = true;
+            } else {
+                let unit = php::unit(v);
+                if ctx.sys.is_active(&unit) {
+                    ctx.sys.restart(&unit)?;
+                }
             }
             php_notes.push(format!("PHP {v} reconfigurado"));
         }
+    }
+    if restart_apache && !l.is_test() && ctx.sys.is_active(APACHE) {
+        ctx.sys.restart(APACHE)?;
     }
     let with_php = |msg: String| if php_notes.is_empty() { msg } else { format!("{msg}; {}", php_notes.join(", ")) };
 
@@ -98,8 +124,8 @@ pub fn run(ctx: &Ctx) -> Result<String> {
             record(ctx, "ERROR: La configuración generada no es válida (revisa: sudo apache2ctl -t)")?;
             bail!("La configuración generada no es válida; restauré la anterior:\n{err}");
         }
-        if ctx.sys.is_active("apache2") {
-            ctx.sys.reload("apache2")?;
+        if ctx.sys.is_active(APACHE) {
+            ctx.sys.reload(APACHE)?;
         }
     }
     let msg = with_php(format!("Apache actualizado ({count} sitios)"));

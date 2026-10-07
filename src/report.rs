@@ -94,6 +94,31 @@ pub struct Status {
     pub default_php: String,
 }
 
+/// Servicios que muestra `status`, con sus nombres en cada plataforma.
+#[cfg(unix)]
+const STATUS_UNITS: [&str; 4] = ["apache2", "cheka", "cheka-dns", "mariadb"];
+#[cfg(windows)]
+const STATUS_UNITS: [&str; 3] = ["cheka-apache", "cheka", "MariaDB"];
+
+/// Estado de un servicio como lo reporta systemd (active, inactive, failed…).
+#[cfg(unix)]
+fn unit_state(name: &str) -> String {
+    let out = Command::new("systemctl").args(["is-active", name]).stderr(Stdio::null()).output();
+    out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn unit_state(name: &str) -> String {
+    crate::system::windows_service_state(name).unwrap_or("not-found").to_string()
+}
+
+/// Unidades de PHP-FPM. En Windows no hay: `mod_fcgid` arranca PHP dentro de Apache.
+#[cfg(windows)]
+pub fn php_units() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(unix)]
 pub fn php_units() -> Vec<String> {
     Command::new("systemctl")
         .args(["list-units", "--all", "--plain", "--no-legend", "cheka-php@*.service"])
@@ -114,7 +139,7 @@ fn resolve_host(host: &str) -> Option<std::net::IpAddr> {
 }
 
 pub fn status(ctx: &Ctx) -> Status {
-    let mut units: Vec<String> = ["apache2", "cheka", "cheka-dns", "mariadb"].map(String::from).into();
+    let mut units: Vec<String> = STATUS_UNITS.map(String::from).into();
     // Mientras convivan las versiones: el vigilante de bash, solo si sigue instalado.
     for legacy in ["cheka-watch.path", "cheka-refresh.timer"] {
         if ctx.layout.units.join(legacy).exists() {
@@ -124,11 +149,7 @@ pub fn status(ctx: &Ctx) -> Status {
     units.extend(php_units());
     let services = units
         .into_iter()
-        .map(|name| {
-            let out = Command::new("systemctl").args(["is-active", &name]).stderr(Stdio::null()).output();
-            let state = out.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-            Service { name, state }
-        })
+        .map(|name| Service { state: unit_state(&name), name })
         .collect();
     Status {
         services,

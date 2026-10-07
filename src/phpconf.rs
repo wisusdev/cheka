@@ -10,7 +10,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -60,7 +59,14 @@ pub fn user_ini_path(layout: &Layout, v: &str) -> PathBuf {
     php::config_dir(layout, v).join("conf.d/99-cheka.ini")
 }
 
+/// Windows: ninguna; los ajustes del usuario ya van dentro del php.ini (`windows_setup`).
+#[cfg(windows)]
+pub fn scan_dir_env(_layout: &Layout, _v: &str) -> String {
+    String::new()
+}
+
 /// `PHP_INI_SCAN_DIR` del PHP-FPM de cheka para esta versión.
+#[cfg(unix)]
 pub fn scan_dir_env(layout: &Layout, v: &str) -> String {
     let conf_d = php::config_dir(layout, v).join("conf.d");
     let ext = ext_dir(layout, v);
@@ -222,10 +228,14 @@ pub fn apply(ctx: &Ctx, v: &str) -> Result<bool> {
             }
             fs::create_dir_all(&dir)?;
             for (file, target) in &desired {
-                symlink(target, dir.join(file))?;
+                crate::platform::symlink(target, &dir.join(file))?;
             }
             changed = true;
         }
+    }
+    #[cfg(windows)]
+    if crate::windows_setup::write_php_ini(ctx, v)? {
+        changed = true;
     }
     Ok(changed)
 }
@@ -269,12 +279,16 @@ pub struct PhpDetail {
 
 /// Ejecuta el PHP-FPM de la versión con su misma configuración (lo que ven los sitios).
 fn fpm_output(ctx: &Ctx, v: &str, flag: &str) -> Result<String> {
-    let dir = php::config_dir(&ctx.layout, v);
-    let out = Command::new(php::fpm_bin(&ctx.layout, v))
+    // En Windows, `php-cgi -i` responde en HTML: la CLI usa el mismo php.ini y da texto.
+    #[cfg(windows)]
+    let bin = php::cli_bin(&ctx.layout, v);
+    #[cfg(unix)]
+    let bin = php::fpm_bin(&ctx.layout, v);
+    let out = Command::new(bin)
         .env("PHP_INI_SCAN_DIR", scan_dir_env(&ctx.layout, v))
         .env("LC_ALL", "C")
         .arg("-c")
-        .arg(dir.join("php.ini"))
+        .arg(php::ini_file(&ctx.layout, v))
         .arg(flag)
         .stderr(Stdio::null())
         .output()?;
@@ -418,6 +432,7 @@ pub fn static_latest() -> BTreeMap<String, String> {
     best.into_iter().map(|(v, p)| (v.clone(), format!("{v}.{p}"))).collect()
 }
 
+#[cfg(unix)]
 fn apt_policy(v: &str) -> (String, Option<String>) {
     let out = Command::new("apt-cache")
         .args(["policy", &format!("php{v}-fpm")])
@@ -431,6 +446,25 @@ fn apt_policy(v: &str) -> (String, Option<String>) {
     (field("Installed:").unwrap_or_default(), field("Candidate:"))
 }
 
+/// Windows: versiones instaladas frente a `releases.json` de windows.php.net.
+#[cfg(windows)]
+pub fn updates(ctx: &Ctx) -> Vec<UpdateInfo> {
+    use crate::windows_setup::{php_installed_version, php_latest};
+    let installed: Vec<&str> = php::SUPPORTED.iter().copied().filter(|v| php::installed(&ctx.layout, v)).collect();
+    let latest = if installed.is_empty() { BTreeMap::new() } else { php_latest().unwrap_or_default() };
+    installed
+        .into_iter()
+        .map(|v| {
+            let current = php_installed_version(&ctx.layout, v).unwrap_or_default();
+            let newest = latest.get(v).map(|r| r.full.clone());
+            let available = newest.as_ref().is_some_and(|n| version_newer(n, &current));
+            // "static" como en Linux: la UI solo distingue apt de lo que descarga cheka.
+            UpdateInfo { version: v.into(), source: "static", current, latest: newest, available }
+        })
+        .collect()
+}
+
+#[cfg(unix)]
 pub fn updates(ctx: &Ctx) -> Vec<UpdateInfo> {
     let installed: Vec<&str> = php::SUPPORTED.iter().copied().filter(|v| php::installed(&ctx.layout, v)).collect();
     let latest = if installed.iter().any(|v| !is_apt(v)) { static_latest() } else { BTreeMap::new() };

@@ -1,4 +1,6 @@
 //! Hito 1.3: `install`/`uninstall` en modo prefijo y el daemon en vivo (sin root).
+//! Solo en Unix: el daemon de Windows (servicio + named pipe) aún no existe.
+#![cfg(unix)]
 
 use std::fs;
 use std::path::{Path, PathBuf};

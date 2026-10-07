@@ -3,7 +3,7 @@ name = "cheka"
 version = "0.2.0-dev"
 edition = "2024"
 description = "Entorno local PHP al estilo de Laravel Valet (port en Rust)"
-rust-version = "1.85"
+rust-version = "1.89"
 
 [[bin]]
 name = "cheka"
@@ -13,13 +13,19 @@ path = "src/main.rs"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 minijinja = "2.24.0"
-nix = { version = "0.31.3", features = ["user", "fs", "socket"] }
 notify-debouncer-mini = "0.7.0"
 regex = "1.13.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 tempfile = "3.27.0"
 toml = "1.1.6"
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", features = ["user", "fs", "socket"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8.1"
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO"] }
 
 [workspace]
 members = ["ui"]

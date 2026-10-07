@@ -1,38 +1,52 @@
 use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use nix::unistd::{AccessFlags, access};
 
 /// Equivale a `[[ -x ruta ]]`.
 pub fn is_executable(p: &Path) -> bool {
-    access(p, AccessFlags::X_OK).is_ok()
+    crate::platform::is_executable(p)
 }
 
 /// Equivale a `readlink -f`: resuelve todo, y admite que el último componente no exista.
 pub fn canonicalize_lenient(p: &Path) -> Option<PathBuf> {
-    if let Ok(c) = fs::canonicalize(p) {
+    if let Ok(c) = crate::platform::canonicalize(p) {
         return Some(c);
     }
-    let parent = fs::canonicalize(p.parent()?).ok()?;
+    let parent = crate::platform::canonicalize(p.parent()?).ok()?;
     Some(parent.join(p.file_name()?))
 }
 
 /// Busca un ejecutable en el PATH (`command -v`).
 pub fn which(name: impl AsRef<OsStr>) -> Option<PathBuf> {
     let name = name.as_ref();
+    // Windows: `mkcert` también encuentra `mkcert.exe` (como hace la terminal con PATHEXT).
+    let names: Vec<std::ffi::OsString> = if cfg!(windows) && Path::new(name).extension().is_none() {
+        ["exe", "cmd", "bat"].iter().map(|e| Path::new(name).with_extension(e).into_os_string()).collect()
+    } else {
+        vec![name.to_os_string()]
+    };
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
+        .flat_map(|d| names.iter().map(move |n| d.join(n)))
+        .find(|c| c.is_file() && is_executable(c))
+}
+
+/// Busca un archivo (no necesariamente ejecutable) en las carpetas del PATH.
+pub fn find_in_path(name: impl AsRef<OsStr>) -> Option<PathBuf> {
+    let name = name.as_ref();
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>())
         .map(|d| d.join(name))
-        .find(|c| c.is_file() && is_executable(c))
+        .find(|c| c.is_file())
 }
 
 pub fn write_mode(path: &Path, contents: &str, mode: u32) -> Result<()> {
     fs::write(path, contents).with_context(|| format!("No pude escribir {}", path.display()))?;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+    crate::platform::set_mode(path, mode)?;
     Ok(())
 }
 

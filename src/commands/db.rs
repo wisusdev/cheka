@@ -1,4 +1,5 @@
-//! `cheka db …` sobre MariaDB (como el usuario, por socket).
+//! `cheka db …` sobre MariaDB: como el usuario, por socket, en Linux; con el usuario de
+//! `[db]` por 127.0.0.1 en Windows (allí no existe `unix_socket`).
 
 use std::fs::File;
 use std::io::{BufRead, IsTerminal, Write};
@@ -16,9 +17,22 @@ fn valid(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Cliente de MariaDB (`mariadb` o `mariadb-dump`) ya autenticado.
+#[cfg(unix)]
+fn client(_ctx: &Ctx, program: &str) -> Command {
+    Command::new(program)
+}
+
+#[cfg(windows)]
+fn client(ctx: &Ctx, program: &str) -> Command {
+    let mut cmd = Command::new(crate::windows_setup::mariadb_bin(program));
+    cmd.args(["-u", &ctx.state.db_user, "-h", "127.0.0.1"]).env("MYSQL_PWD", &ctx.state.db_password);
+    cmd
+}
+
 /// Ejecuta `mariadb -e SQL`; si falla, mariadb ya mostró el error.
-fn sql(statement: &str) -> Result<()> {
-    let st = Command::new("mariadb").arg("-e").arg(statement).status().context("No pude ejecutar mariadb")?;
+fn sql(ctx: &Ctx, statement: &str) -> Result<()> {
+    let st = client(ctx, "mariadb").arg("-e").arg(statement).status().context("No pude ejecutar mariadb")?;
     if !st.success() {
         return Err(Reported.into());
     }
@@ -29,9 +43,9 @@ fn create_sql(name: &str) -> String {
     format!("CREATE DATABASE IF NOT EXISTS `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
 }
 
-pub fn create(name: &str) -> Result<()> {
+pub fn create(ctx: &Ctx, name: &str) -> Result<()> {
     valid(name)?;
-    sql(&create_sql(name))?;
+    sql(ctx, &create_sql(name))?;
     ui::ok(format!("Base de datos '{name}' lista"));
     Ok(())
 }
@@ -56,13 +70,23 @@ fn wait_ok(child: &mut std::process::Child, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// Fecha y hora local para el nombre del volcado (AAAAMMDD-HHMMSS).
+fn timestamp() -> Result<String> {
+    let out = if cfg!(windows) {
+        Command::new("powershell.exe").args(["-NoProfile", "-Command", "Get-Date -Format yyyyMMdd-HHmmss"]).output()?
+    } else {
+        Command::new("date").arg("+%Y%m%d-%H%M%S").output()?
+    };
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 pub fn db(ctx: &Ctx, args: &[String]) -> Result<()> {
     let sub = args.first().map(String::as_str).unwrap_or("help");
     let (db_user, db_pass) = (&ctx.state.db_user, &ctx.state.db_password);
     let rest = args.get(1..).unwrap_or_default();
     match sub {
         "create" => {
-            create(&name_arg(ctx, rest, 0)?)?;
+            create(ctx, &name_arg(ctx, rest, 0)?)?;
             println!("  host: localhost (o 127.0.0.1)   usuario: {db_user}   contraseña: {db_pass}");
         }
         "drop" => {
@@ -78,11 +102,11 @@ pub fn db(ctx: &Ctx, args: &[String]) -> Result<()> {
             if confirm.trim_end_matches(['\n', '\r']) != name {
                 bail!("Cancelado");
             }
-            sql(&format!("DROP DATABASE IF EXISTS `{name}`"))?;
+            sql(ctx, &format!("DROP DATABASE IF EXISTS `{name}`"))?;
             ui::ok(format!("Base de datos '{name}' borrada"));
         }
         "list" => {
-            let out = Command::new("mariadb").args(["-N", "-e", "SHOW DATABASES"]).output()?;
+            let out = client(ctx, "mariadb").args(["-N", "-e", "SHOW DATABASES"]).output()?;
             if !out.status.success() {
                 std::io::stderr().write_all(&out.stderr)?;
                 return Err(Reported.into());
@@ -100,8 +124,11 @@ pub fn db(ctx: &Ctx, args: &[String]) -> Result<()> {
             if !std::path::Path::new(file).is_file() {
                 bail!("No existe {file}");
             }
-            sql(&create_sql(&name))?;
-            let mut mariadb = Command::new("mariadb");
+            if cfg!(windows) && file.ends_with(".gz") {
+                bail!("En Windows, descomprime primero el archivo (p. ej. con 7-Zip) e importa el .sql");
+            }
+            sql(ctx, &create_sql(&name))?;
+            let mut mariadb = client(ctx, "mariadb");
             mariadb.arg(&name);
             if file.ends_with(".gz") {
                 let mut zcat = Command::new("zcat").arg(file).stdout(Stdio::piped()).spawn()?;
@@ -119,12 +146,24 @@ pub fn db(ctx: &Ctx, args: &[String]) -> Result<()> {
             valid(&name)?;
             let out = match rest.get(1) {
                 Some(o) => o.clone(),
-                None => {
-                    let d = Command::new("date").arg("+%Y%m%d-%H%M%S").output()?;
-                    format!("{name}-{}.sql.gz", String::from_utf8_lossy(&d.stdout).trim())
-                }
+                None => format!("{name}-{}.{}", timestamp()?, if cfg!(windows) { "sql" } else { "sql.gz" }),
             };
-            let mut dump = Command::new("mariadb-dump")
+            // Windows no trae gzip: el volcado queda sin comprimir.
+            if cfg!(windows) {
+                if out.ends_with(".gz") {
+                    bail!("En Windows el volcado se guarda sin comprimir: usa un nombre terminado en .sql");
+                }
+                let st = client(ctx, "mariadb-dump")
+                    .args(["--single-transaction", "--routines", &name])
+                    .stdout(File::create(&out)?)
+                    .status()?;
+                if !st.success() {
+                    bail!("mariadb-dump falló");
+                }
+                ui::ok(format!("Exportado a {out}"));
+                return Ok(());
+            }
+            let mut dump = client(ctx, "mariadb-dump")
                 .args(["--single-transaction", "--routines", &name])
                 .stdout(Stdio::piped())
                 .spawn()?;

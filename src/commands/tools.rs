@@ -5,8 +5,8 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 
 use anyhow::{Result, bail};
-use nix::unistd::geteuid;
 
+use crate::platform::is_root;
 use crate::tools::{self, Tool};
 use crate::{Ctx, ui};
 
@@ -52,7 +52,7 @@ pub fn run_root(ctx: &Ctx, args: &[String]) -> Result<()> {
 
 /// `tools _user <ids…>`: pasos del usuario, con una línea marcadora por herramienta.
 pub fn run_user(ctx: &Ctx, args: &[String]) -> Result<()> {
-    if geteuid().is_root() && ctx.id.user != "root" {
+    if is_root() && ctx.id.user != "root" {
         bail!("Los pasos del usuario no deben correr como root");
     }
     for t in tools::resolve(&ids_of(args))? {
@@ -84,7 +84,7 @@ fn run_phase(program: &str, args: &[String]) -> Result<BTreeMap<String, bool>> {
 /// `tools install <ids…>`: pide la contraseña una vez para los pasos de root y luego hace
 /// los del usuario como él.
 pub fn install(args: &[String]) -> Result<()> {
-    if geteuid().is_root() {
+    if is_root() {
         bail!("Ejecuta 'cheka tools install' con tu usuario (sin sudo): pedirá la contraseña solo para los pasos que la necesitan");
     }
     let ids = ids_of(args);

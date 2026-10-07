@@ -41,18 +41,39 @@ pub fn system_php() -> String {
 }
 
 /// PHP de apt (`/usr/sbin/php-fpmX.Y`) o binario estático de cheka.
+#[cfg(unix)]
 pub fn fpm_bin(layout: &Layout, v: &str) -> PathBuf {
     let apt = PathBuf::from(format!("/usr/sbin/php-fpm{v}"));
     if is_executable(&apt) { apt } else { layout.opt.join(format!("php/{v}/php-fpm")) }
 }
 
+/// Windows no tiene FPM: Apache arranca `php-cgi.exe` con `mod_fcgid`.
+#[cfg(windows)]
+pub fn fpm_bin(layout: &Layout, v: &str) -> PathBuf {
+    layout.opt.join("php").join(v).join("php-cgi.exe")
+}
+
+#[cfg(unix)]
 pub fn cli_bin(layout: &Layout, v: &str) -> PathBuf {
     let apt = apt_cli(v);
     if is_executable(&apt) { apt } else { layout.bin.join(format!("php{v}")) }
 }
 
+#[cfg(windows)]
+pub fn cli_bin(layout: &Layout, v: &str) -> PathBuf {
+    layout.opt.join("php").join(v).join("php.exe")
+}
+
 pub fn apt_cli(v: &str) -> PathBuf {
     PathBuf::from(format!("/usr/bin/php{v}"))
+}
+
+/// El php.ini de cheka para esta versión (en Windows va junto a los binarios).
+pub fn ini_file(layout: &Layout, v: &str) -> PathBuf {
+    #[cfg(windows)]
+    return crate::windows_setup::php_ini_path(layout, v);
+    #[cfg(unix)]
+    config_dir(layout, v).join("php.ini")
 }
 
 pub fn installed(layout: &Layout, v: &str) -> bool {
@@ -72,6 +93,7 @@ pub fn unit(v: &str) -> String {
 }
 
 /// Zona horaria del sistema para `date.timezone`.
+#[cfg(unix)]
 pub fn timezone() -> String {
     Command::new("timedatectl")
         .args(["show", "-p", "Timezone", "--value"])
@@ -83,3 +105,9 @@ pub fn timezone() -> String {
         .unwrap_or_else(|| "UTC".to_string())
 }
 
+/// Windows usa nombres propios de zona horaria ("Central America Standard Time"), no los
+/// de IANA que espera PHP: se usa `TZ` si está definida, si no UTC.
+#[cfg(windows)]
+pub fn timezone() -> String {
+    std::env::var("TZ").ok().filter(|s| s.contains('/')).unwrap_or_else(|| "UTC".to_string())
+}

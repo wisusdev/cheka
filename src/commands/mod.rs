@@ -8,15 +8,23 @@ pub mod tools;
 pub mod site;
 
 use std::ffi::OsString;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(unix)]
+use std::process::Stdio;
 
-use anyhow::{Context, Result, anyhow, bail};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::{Result, anyhow, bail};
 
 use crate::layout::TLD;
-use crate::util::{is_executable, mkdir, which, write, write_mode};
-use crate::{Ctx, php, refresh, render, report, sites, ui};
+use crate::platform::exec;
+use crate::util::is_executable;
+#[cfg(unix)]
+use crate::util::{mkdir, which, write, write_mode};
+#[cfg(unix)]
+use crate::render;
+use crate::{Ctx, php, refresh, report, sites, ui};
 
 pub fn refresh(ctx: &Ctx, quiet: bool) -> Result<()> {
     ui::set_quiet(quiet);
@@ -96,13 +104,22 @@ pub fn php(ctx: &Ctx, args: Vec<OsString>) -> Result<()> {
     if !is_executable(&bin) {
         bail!("No encuentro {}", bin.display());
     }
-    Err(anyhow!("No pude ejecutar {}: {}", bin.display(), Command::new(&bin).args(args).exec()))
+    Err(anyhow!("No pude ejecutar {}: {}", bin.display(), exec(Command::new(&bin).args(args))))
+}
+
+/// Script de Composer para pasarle al PHP del sitio. En Windows el comando es
+/// `composer.bat`; lo que PHP necesita es el `composer.phar` de al lado.
+pub fn composer_script() -> Option<PathBuf> {
+    #[cfg(windows)]
+    return crate::util::find_in_path("composer.phar");
+    #[cfg(unix)]
+    which("composer")
 }
 
 pub fn composer(ctx: &Ctx, args: Vec<OsString>) -> Result<()> {
     let bin = current_cli(ctx)?;
-    let composer = which("composer").ok_or_else(|| anyhow!("Composer no está instalado"))?;
-    Err(anyhow!("No pude ejecutar composer: {}", Command::new(&bin).arg(composer).args(args).exec()))
+    let composer = composer_script().ok_or_else(|| anyhow!("Composer no está instalado"))?;
+    Err(anyhow!("No pude ejecutar composer: {}", exec(Command::new(&bin).arg(composer).args(args))))
 }
 
 pub use crate::report::php_units;
@@ -168,16 +185,22 @@ pub fn ensure_wpcli(ctx: &Ctx) -> Result<()> {
 pub fn wp(ctx: &Ctx, args: Vec<OsString>) -> Result<()> {
     ensure_wpcli(ctx)?;
     let bin = current_cli(ctx)?;
-    Err(anyhow!("No pude ejecutar WP-CLI: {}", Command::new(&bin).arg(&ctx.id.wpcli).args(args).exec()))
+    Err(anyhow!("No pude ejecutar WP-CLI: {}", exec(Command::new(&bin).arg(&ctx.id.wpcli).args(args))))
 }
 
 /// start | stop | restart de todos los servicios de cheka.
 pub fn services(ctx: &Ctx, action: &str) -> Result<()> {
     ctx.ensure_root()?;
-    let mut units: Vec<String> = ["cheka-dns", "apache2", "mariadb"].map(String::from).into();
-    units.extend(php_units());
+    #[cfg(unix)]
+    let units: Vec<String> = {
+        let mut units: Vec<String> = ["cheka-dns", "apache2", "mariadb"].map(String::from).into();
+        units.extend(php_units());
+        units
+    };
+    #[cfg(windows)]
+    let units: Vec<String> = [crate::windows_setup::APACHE_SERVICE, "MariaDB"].map(String::from).into();
     for u in units {
-        if Command::new("systemctl").args([action, &u]).status().is_ok_and(|s| s.success()) {
+        if service_action(action, &u) {
             ui::ok(format!("{action} {u}"));
         } else {
             ui::warn(format!("{action} {u} falló"));
@@ -186,9 +209,28 @@ pub fn services(ctx: &Ctx, action: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn service_action(action: &str, unit: &str) -> bool {
+    Command::new("systemctl").args([action, unit]).status().is_ok_and(|s| s.success())
+}
+
+#[cfg(windows)]
+fn service_action(action: &str, unit: &str) -> bool {
+    let verb = match action {
+        "start" => "Start",
+        "stop" => "Stop",
+        _ => "Restart",
+    };
+    Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &format!("{verb}-Service -Name '{unit}'")])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 /// Descarga los binarios estáticos (fpm + cli) de la última versión X.Y.* disponible.
 /// Extrae en un temporal y reemplaza con `rename`: es seguro aunque esa versión esté
 /// corriendo (sirve también para actualizar). Devuelve la versión completa instalada.
+#[cfg(unix)]
 pub fn download_static_php(ctx: &Ctx, v: &str) -> Result<String> {
     let arch = std::env::consts::ARCH;
     ui::info(format!("Buscando la última versión de PHP {v}…"));
@@ -236,9 +278,19 @@ pub fn download_static_php(ctx: &Ctx, v: &str) -> Result<String> {
 /// php:install <versión> (root): instala si hace falta y (re)genera su configuración.
 pub fn php_install(ctx: &Ctx, version: &str) -> Result<()> {
     ctx.ensure_root()?;
-    let l = &ctx.layout;
     let v = php::normalize(version);
     php::validate(&v)?;
+    // Windows: zips NTS de windows.php.net, sin PHP-FPM (los arranca mod_fcgid).
+    #[cfg(windows)]
+    return crate::windows_setup::php_install(ctx, &v);
+    #[cfg(unix)]
+    php_install_unix(ctx, &v)
+}
+
+#[cfg(unix)]
+fn php_install_unix(ctx: &Ctx, v: &str) -> Result<()> {
+    let l = &ctx.layout;
+    let v = v.to_string();
     if !php::installed(l, &v) {
         let apt_ok = !l.is_test()
             && is_executable(&php::apt_cli(&v))
@@ -285,14 +337,15 @@ pub fn fpm(ctx: &Ctx, version: &str) -> Result<()> {
     php::validate(version)?;
     let dir = php::config_dir(&ctx.layout, version);
     let bin = php::fpm_bin(&ctx.layout, version);
-    let err = Command::new(&bin)
-        .env("PHP_INI_SCAN_DIR", crate::phpconf::scan_dir_env(&ctx.layout, version))
-        .arg("--nodaemonize")
-        .arg("--fpm-config")
-        .arg(dir.join("php-fpm.conf"))
-        .arg("-c")
-        .arg(dir.join("php.ini"))
-        .exec();
+    let err = exec(
+        Command::new(&bin)
+            .env("PHP_INI_SCAN_DIR", crate::phpconf::scan_dir_env(&ctx.layout, version))
+            .arg("--nodaemonize")
+            .arg("--fpm-config")
+            .arg(dir.join("php-fpm.conf"))
+            .arg("-c")
+            .arg(dir.join("php.ini")),
+    );
     Err(anyhow!("No pude ejecutar {}: {err}", bin.display()))
 }
 

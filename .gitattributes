@@ -1,0 +1,4 @@
+# LF en todas las plataformas: las plantillas se incrustan en el binario (include_str!)
+# y legacy/cheka.sh no corre con CRLF.
+* text=auto eol=lf
+*.png binary

@@ -3,18 +3,16 @@
 //! de la versión en bash.
 
 use std::fs;
-use std::os::unix::fs::{chown, lchown, symlink};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use nix::unistd::geteuid;
 
 use crate::identity::Identity;
+use crate::platform;
 
 fn give(id: &Identity, p: &Path, link: bool) -> Result<()> {
-    if geteuid().is_root() && id.user != "root" {
-        let (u, g) = (Some(id.uid.as_raw()), Some(id.gid.as_raw()));
-        if link { lchown(p, u, g)? } else { chown(p, u, g)? }
+    if platform::is_root() && id.user != "root" {
+        platform::chown(p, id.uid, id.gid, link)?;
     }
     Ok(())
 }
@@ -60,7 +58,7 @@ pub fn symlink_force(id: &Identity, target: &Path, link: &Path) -> Result<()> {
     if fs::symlink_metadata(link).is_ok() {
         fs::remove_file(link)?;
     }
-    symlink(target, link).with_context(|| format!("No pude crear el enlace {}", link.display()))?;
+    platform::symlink(target, link).with_context(|| format!("No pude crear el enlace {}", link.display()))?;
     give(id, link, true)
 }
 

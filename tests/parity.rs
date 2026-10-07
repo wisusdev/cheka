@@ -6,6 +6,9 @@
 //! - el estado del usuario: bash usa archivos sueltos y Rust `cheka.toml`; se compara su
 //!   **contenido** (`State::same_content`), no los bytes;
 //! - Rust ya no genera `cheka-watch.path` (lo reemplaza el daemon).
+//!
+//! Solo en Unix: necesitan bash y comparan la configuración de Linux.
+#![cfg(unix)]
 
 use cheka::state::{Format, State};
 
