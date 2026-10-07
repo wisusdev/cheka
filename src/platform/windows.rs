@@ -234,7 +234,7 @@ fn elevated_cmdline(exe: &Path, args: &[OsString], log: &Path) -> Result<String>
 
 /// `-EncodedCommand` de PowerShell: base64 del script en UTF-16LE. Evita que las comillas
 /// del script se pierdan al pasarlo como argumento.
-fn encode_powershell(script: &str) -> String {
+pub fn encode_powershell(script: &str) -> String {
     const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);

@@ -518,6 +518,7 @@ version = "0.2.0-dev"
 dependencies = [
  "anyhow",
  "clap",
+ "flate2",
  "minijinja",
  "nix",
  "notify-debouncer-mini",

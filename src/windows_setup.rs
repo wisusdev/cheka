@@ -423,19 +423,88 @@ pub fn install_mariadb(ctx: &Ctx) -> Result<()> {
          GRANT ALL PRIVILEGES ON *.* TO '{user}'@'127.0.0.1' WITH GRANT OPTION;\n\
          FLUSH PRIVILEGES;\n"
     );
-    let ok = Command::new(mariadb_bin("mariadb"))
-        .args(["-u", "root", "-h", "127.0.0.1", "-e", &sql])
-        .status()
-        .is_ok_and(|s| s.success());
-    if !ok {
+    let root_tcp = |sql: &str| {
+        Command::new(mariadb_bin("mariadb"))
+            .args(["--protocol=TCP", "-u", "root", "-h", "127.0.0.1", "-e", sql])
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if !root_tcp(&sql) {
         bail!(
             "No pude crear el usuario '{user}' en MariaDB como root sin contraseña. Si tu root tiene \
              contraseña, créalo a mano:\n  mariadb -u root -p -e \"CREATE USER '{user}'@'localhost' IDENTIFIED BY '{pass}'; \
              GRANT ALL ON *.* TO '{user}'@'localhost' WITH GRANT OPTION;\""
         );
     }
-    ui::ok(format!("MariaDB listo; usuario '{user}'/'{pass}' para tus proyectos"));
+    ui::ok(format!("Usuario '{user}'/'{pass}' para tus proyectos"));
+
+    // Tu usuario de Windows sin contraseña, por named pipe: el equivalente al `unix_socket`
+    // de Linux. Así `mariadb` y `cheka db` entran como tú.
+    let me = &ctx.id.user;
+    if me.contains(['\'', '\\', '"']) {
+        bail!("Tu nombre de usuario de Windows tiene caracteres que MariaDB no admite aquí: {me}");
+    }
+    let ini = mariadb_ini();
+    let text = fs::read_to_string(&ini).with_context(|| format!("No pude leer {}", ini.display()))?;
+    let mut new = set_ini(&text, "mysqld", "named-pipe", "ON");
+    new = set_ini(&new, "client", "protocol", "PIPE");
+    new = set_ini(&new, "client", "user", me);
+    if new != text {
+        write(&ini, &new)?;
+        ui::info("Reiniciando MariaDB con named pipes…");
+        ctx.sys.restart(MARIADB_SERVICE)?;
+    }
+    // Cargar el plugin falla si ya está cargado: no importa.
+    let _ = Command::new(mariadb_bin("mariadb"))
+        .args(["--protocol=TCP", "-u", "root", "-h", "127.0.0.1", "-e", "INSTALL SONAME 'auth_named_pipe'"])
+        .stderr(Stdio::null())
+        .status();
+    let ok = root_tcp(&format!(
+        "CREATE USER IF NOT EXISTS '{me}'@'localhost' IDENTIFIED VIA named_pipe;\n\
+         GRANT ALL PRIVILEGES ON *.* TO '{me}'@'localhost' WITH GRANT OPTION;\n\
+         FLUSH PRIVILEGES;\n"
+    ));
+    if !ok {
+        bail!("No pude crear tu usuario '{me}' en MariaDB (named pipe)");
+    }
+    ui::ok(format!("Usuario '{me}' sin contraseña (named pipe, como unix_socket en Linux): prueba 'mariadb'"));
     Ok(())
+}
+
+/// `my.ini` del servicio de MariaDB (`<instalación>\data\my.ini`). Los clientes también lo
+/// leen (sección `[client]`).
+pub fn mariadb_ini() -> PathBuf {
+    let bin = mariadb_bin("mariadb");
+    bin.parent().and_then(Path::parent).map(|d| d.join(r"data\my.ini")).unwrap_or_else(|| PathBuf::from("my.ini"))
+}
+
+/// Pone `key=value` en `[section]` de un archivo INI (reemplaza si ya está; crea la sección
+/// si falta). Conserva el resto del archivo tal cual.
+fn set_ini(text: &str, section: &str, key: &str, value: &str) -> String {
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let header = format!("[{section}]");
+    let same_key = |l: &str| {
+        let k = l.split('=').next().unwrap_or("").trim().replace('_', "-");
+        k.eq_ignore_ascii_case(&key.replace('_', "-"))
+    };
+    let start = lines.iter().position(|l| l.trim().eq_ignore_ascii_case(&header));
+    match start {
+        Some(s) => {
+            let end = lines[s + 1..].iter().position(|l| l.trim_start().starts_with('[')).map_or(lines.len(), |p| s + 1 + p);
+            match (s + 1..end).find(|&i| same_key(&lines[i])) {
+                Some(i) => lines[i] = format!("{key}={value}"),
+                None => lines.insert(end, format!("{key}={value}")),
+            }
+        }
+        None => {
+            lines.push(header);
+            lines.push(format!("{key}={value}"));
+        }
+    }
+    let mut out = lines.join(nl);
+    out.push_str(nl);
+    out
 }
 
 // -------------------------------------------------------------------- mkcert ----
@@ -803,6 +872,22 @@ pub fn uninstall_apache(ctx: &Ctx) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn my_ini_cambia_solo_lo_necesario() {
+        let ini = "[mysqld]\r\ndatadir=C:/x\r\nport=3306\r\n[client]\r\nport=3306\r\n";
+        let a = set_ini(ini, "mysqld", "named-pipe", "ON");
+        let a = set_ini(&a, "client", "protocol", "PIPE");
+        let a = set_ini(&a, "client", "user", "Jesus");
+        assert_eq!(
+            a,
+            "[mysqld]\r\ndatadir=C:/x\r\nport=3306\r\nnamed-pipe=ON\r\n[client]\r\nport=3306\r\nprotocol=PIPE\r\nuser=Jesus\r\n"
+        );
+        // idempotente, y reconoce named_pipe con guion bajo
+        assert_eq!(set_ini(&a, "client", "user", "Jesus"), a);
+        assert_eq!(set_ini("[mysqld]\nnamed_pipe=OFF\n", "mysqld", "named-pipe", "ON"), "[mysqld]\nnamed-pipe=ON\n");
+        assert_eq!(set_ini("", "client", "user", "x"), "[client]\nuser=x\n");
+    }
 
     #[test]
     fn hosts_solo_toca_su_bloque() {

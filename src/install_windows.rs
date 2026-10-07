@@ -177,10 +177,20 @@ pub fn install(ctx: &mut Ctx) -> anyhow::Result<()> {
     step("MariaDB");
     if test {
         ui::info("Omitido en modo prueba");
-    } else if let Err(e) = windows_setup::install_mariadb(ctx) {
-        // No es motivo para dejar a medias lo demás: se puede repetir `cheka install`.
-        ui::warn(format!("{e:#}"));
-        ui::warn("¿Otro MySQL/MariaDB (Laragon, XAMPP) usa el puerto 3306? Detenlo y repite 'cheka install'");
+    } else {
+        match windows_setup::install_mariadb(ctx) {
+            Ok(()) => {
+                // Como en Linux, `mariadb` y `mariadb-dump` quedan a mano en la terminal.
+                if let Some(bin) = windows_setup::mariadb_bin("mariadb").parent() {
+                    ensure_in_path(bin)?;
+                }
+            }
+            // No es motivo para dejar a medias lo demás: se puede repetir `cheka install`.
+            Err(e) => {
+                ui::warn(format!("{e:#}"));
+                ui::warn("¿Otro MySQL/MariaDB (Laragon, XAMPP) usa el puerto 3306? Detenlo y repite 'cheka install'");
+            }
+        }
     }
 
     step("Verificación");
