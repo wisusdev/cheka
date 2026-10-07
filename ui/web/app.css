@@ -267,3 +267,24 @@ details[open] summary { margin-bottom: 10px; }
 .toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 10; max-width: 420px; }
 .toast { background: var(--panel); border: 1px solid var(--border); border-left: 4px solid var(--ok); border-radius: 8px; padding: 10px 14px; box-shadow: 0 6px 20px rgba(0,0,0,.12); white-space: pre-wrap; }
 .toast.error { border-left-color: var(--bad); }
+
+/* ---------- configuración inicial ---------- */
+.setup { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: var(--bg); padding: 24px; }
+.setup-box { width: min(560px, 100%); background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 28px 30px; display: flex; flex-direction: column; gap: 14px; }
+.setup-box h1 { margin: 0; font-size: 22px; }
+.setup-box p { margin: 0; }
+.setup-steps { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 8px; }
+.setup-steps li { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+.setup-steps li::before { content: ""; width: 18px; height: 18px; flex: none; border-radius: 50%; border: 2px solid var(--border); box-sizing: border-box; }
+.setup-steps li.running { color: var(--text); font-weight: 500; }
+.setup-steps li.running::before { border-color: var(--accent); border-top-color: transparent; animation: spin .8s linear infinite; }
+.setup-steps li.done { color: var(--text); }
+.setup-steps li.done::before { content: "✓"; border: none; background: var(--ok); color: #fff; font-size: 12px; display: grid; place-items: center; }
+.setup-steps li.warn::before { content: "!"; border: none; background: var(--warn); color: #fff; font-size: 12px; font-weight: 700; display: grid; place-items: center; }
+.setup-steps li.failed { color: var(--bad); }
+.setup-steps li.failed::before { content: "✕"; border: none; background: var(--bad); color: #fff; font-size: 11px; display: grid; place-items: center; }
+.setup-steps .note { font-weight: 400; color: var(--muted); font-size: 12.5px; }
+.setup-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.setup .console { max-height: 220px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .setup-steps li.running::before { animation: none; border-top-color: var(--accent); } }

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "mainBinaryName": "cheka-ui",
+  "build": {
+    "beforeBuildCommand": "cargo build --release -p cheka"
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "cheka",
+    "shortDescription": "Entorno local de desarrollo PHP",
+    "longDescription": "Cada carpeta de tu carpeta Sites se publica sola como http://<carpeta>.test, con la versión de PHP que elijas por proyecto, MariaDB y HTTPS local.",
+    "resources": { "../target/release/cheka.exe": "cheka.exe" },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "languages": ["Spanish"],
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "windows/hooks.nsh"
+      }
+    }
+  }
+}

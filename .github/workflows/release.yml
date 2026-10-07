@@ -1,0 +1,79 @@
+# Publica una versión al crear un tag vX.Y.Z: instalador de Windows (con la UI), cheka.exe
+# suelto y el binario de Linux, con sus sha256. La versión sale del tag: no hace falta
+# cambiarla a mano en Cargo.toml ni en tauri.conf.json.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows (instalador)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Versión del tag
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version = \".*\"/version = \"$v\"/" Cargo.toml ui/Cargo.toml
+          sed -i "s/\"version\": \".*\"/\"version\": \"$v\"/" ui/tauri.conf.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Instalador (Tauri + NSIS)
+        working-directory: ui
+        run: npx --yes @tauri-apps/cli@2 build
+      - name: Archivos de la versión
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/release/bundle/nsis/*-setup.exe "dist/cheka-${GITHUB_REF_NAME}-windows-x64-setup.exe"
+          (cd target/release && 7z a "../../dist/cheka-${GITHUB_REF_NAME}-windows-x64.zip" cheka.exe)
+      - uses: actions/upload-artifact@v5
+        with:
+          name: windows
+          path: dist/*
+
+  linux:
+    name: Linux
+    # La glibc más vieja que ofrece GitHub: el binario corre en más distribuciones.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Versión del tag
+        run: sed -i "s/^version = \".*\"/version = \"${GITHUB_REF_NAME#v}\"/" Cargo.toml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Compilar
+        run: cargo build --release -p cheka
+      - name: Archivos de la versión
+        run: |
+          mkdir dist
+          tar -czf "dist/cheka-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" -C target/release cheka
+      - uses: actions/upload-artifact@v5
+        with:
+          name: linux
+          path: dist/*
+
+  publish:
+    name: Publicar
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+      - name: sha256
+        run: cd dist && sha256sum * > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

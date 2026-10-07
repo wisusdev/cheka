@@ -24,7 +24,24 @@ versión de PHP que elijas por proyecto, MariaDB y HTTPS local.
 
 ## Instalación
 
-Necesitas Rust ([rustup](https://rustup.rs)) para compilar:
+### Windows 10/11
+
+1. Descarga `cheka-vX.Y.Z-windows-x64-setup.exe` de la [última versión](https://github.com/wisusdev/cheka/releases/latest) y ejecútalo.
+2. Abre **cheka** desde el menú Inicio y pulsa **Configurar**: descarga PHP, Apache y
+   MariaDB, configura `*.test` y HTTPS y deja todo como servicio. Windows pide permiso una
+   sola vez.
+3. Crea o clona un proyecto en `%USERPROFILE%\Sites` y ábrelo en `http://<carpeta>.test`.
+
+Para actualizar, ejecuta el instalador de la versión nueva. Para desinstalar, usa
+*Configuración → Aplicaciones*: quita los servicios, la regla DNS y la entrada del PATH, y
+conserva tus proyectos y tus bases de datos.
+
+También sirve desde la terminal: `cheka.exe install` (lo que hace el botón **Configurar**).
+
+### Ubuntu
+
+Necesitas Rust ([rustup](https://rustup.rs)) para compilar (o usa el binario
+`cheka-vX.Y.Z-linux-x86_64.tar.gz` de la [última versión](https://github.com/wisusdev/cheka/releases/latest)):
 
 ```bash
 cd ~/cheka
@@ -300,8 +317,14 @@ cargo clippy --all-targets
   proyecto de prueba y compara la salida y los archivos generados byte a byte, y el estado
   por contenido. Con `PARITY_SHOW=1 cargo test --test parity -- --nocapture` se ve la salida
   de cada paso.
-- **API del daemon:** socket Unix en `/run/cheka/cheka.sock`, con un JSON por línea
-  (`{"cmd":"ping"}`, `{"cmd":"refresh"}`). Será la base de la UI de bandeja.
+- **API del daemon:** socket Unix en `/run/cheka/cheka.sock` (named pipe `\\.\pipe\cheka` en
+  Windows), con un JSON por línea (`{"cmd":"ping"}`, `{"cmd":"refresh"}`).
+- **CI:** cada PR corre clippy y `cargo test` en Ubuntu y Windows (`.github/workflows/ci.yml`).
+- **Instalador de Windows (local):** `cd ui && npx @tauri-apps/cli@2 build` deja
+  `target/release/bundle/nsis/cheka_X.Y.Z_x64-setup.exe` (con la UI y `cheka.exe`).
+- **Publicar una versión:** `git tag v0.3.0 && git push origin v0.3.0`. GitHub Actions
+  (`.github/workflows/release.yml`) toma la versión del tag, genera el instalador de
+  Windows, `cheka.exe` suelto y el binario de Linux, y los publica en *Releases* con sus sha256.
 
 ## Pruebas
 

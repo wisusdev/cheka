@@ -225,6 +225,21 @@
   </main>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>
+  <!-- Configuración inicial (Windows, después del instalador) -->
+  <div class="setup hidden" id="setup" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+    <div class="setup-box">
+      <img src="icon.png" alt="" width="56" height="56">
+      <h1 id="setup-title">Bienvenido a cheka</h1>
+      <p class="muted" id="setup-intro"></p>
+      <ol class="setup-steps" id="setup-steps"></ol>
+      <pre class="console hidden" id="setup-console" aria-label="Detalles de la configuración"></pre>
+      <div class="setup-actions">
+        <button class="btn ghost hidden" id="setup-details" type="button">Ver detalles</button>
+        <button class="btn primary" id="setup-start" type="button">Configurar</button>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>

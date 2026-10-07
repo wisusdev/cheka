@@ -46,15 +46,34 @@ fn program_data() -> PathBuf {
     PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| "C:/ProgramData".into())).join("cheka")
 }
 
-/// Binario de cheka: `CHEKA_BIN` (desarrollo) o el instalado.
+/// `cheka.exe` que trae el instalador de Windows (junto a `cheka-ui.exe`). Es el que
+/// configura el sistema la primera vez (`cheka install` lo copia a `%ProgramData%\cheka`).
+#[cfg(windows)]
+fn bundled_cheka() -> Option<PathBuf> {
+    let p = std::env::current_exe().ok()?.parent()?.join("cheka.exe");
+    p.is_file().then_some(p)
+}
+
+/// Windows: `cheka.exe` ya configurado por `cheka install`.
+#[cfg(windows)]
+fn installed_cheka() -> PathBuf {
+    program_data().join("bin").join("cheka.exe")
+}
+
+/// Binario de cheka: `CHEKA_BIN` (desarrollo) o el instalado (en Windows, antes de la
+/// primera configuración, el que trae el instalador).
 fn cheka_bin() -> PathBuf {
     if let Some(b) = std::env::var_os("CHEKA_BIN") {
         return PathBuf::from(b);
     }
     #[cfg(windows)]
-    return program_data().join("bin").join("cheka.exe");
+    let bin = {
+        let installed = installed_cheka();
+        if installed.is_file() { installed } else { bundled_cheka().unwrap_or(installed) }
+    };
     #[cfg(unix)]
-    PathBuf::from("/usr/local/bin/cheka")
+    let bin = PathBuf::from("/usr/local/bin/cheka");
+    bin
 }
 
 /// Logs de Apache y PHP de los sitios.
@@ -303,6 +322,82 @@ async fn read_log(site: String, php: String) -> Result<Value, String> {
     }))
 }
 
+// ------------------------------------------------------- configuración inicial ----
+
+#[derive(Serialize)]
+struct SetupState {
+    /// cheka aún no configuró este equipo (primera vez después del instalador).
+    needed: bool,
+    /// El instalador trajo una versión distinta de la configurada.
+    update: bool,
+    installed_version: Option<String>,
+    bundled_version: Option<String>,
+}
+
+/// "cheka 0.2.0" → "0.2.0"
+#[cfg(windows)]
+fn version_of(bin: &Path) -> Option<String> {
+    let out = command(bin).arg("--version").stdin(Stdio::null()).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).split_whitespace().nth(1).map(str::to_string)
+}
+
+/// ¿Hay que configurar (o actualizar) cheka? Solo aplica al instalador de Windows; en
+/// Linux se instala desde la terminal (`sudo cheka install`).
+#[tauri::command]
+async fn setup_state() -> SetupState {
+    #[cfg(windows)]
+    let state = {
+        let installed = installed_cheka();
+        let configured = installed.is_file() && program_data().join("etc").join("user").is_file();
+        let bundled = bundled_cheka();
+        let installed_version = configured.then(|| version_of(&installed)).flatten();
+        let bundled_version = bundled.as_deref().and_then(version_of);
+        SetupState {
+            needed: !configured && bundled.is_some(),
+            update: configured && bundled_version.is_some() && installed_version != bundled_version,
+            installed_version,
+            bundled_version,
+        }
+    };
+    #[cfg(unix)]
+    let state = SetupState { needed: false, update: false, installed_version: None, bundled_version: None };
+    state
+}
+
+/// `cheka install` con el cheka del instalador (o el ya instalado), enviando la salida
+/// línea a línea (evento `setup-output`) y el resultado al terminar (`setup-done`). cheka
+/// pide UAC por su cuenta: así sabe qué usuario es el dueño de los proyectos.
+#[tauri::command]
+async fn run_setup(app: AppHandle) -> Result<(), String> {
+    #[cfg(windows)]
+    let bin = bundled_cheka().unwrap_or_else(cheka_bin);
+    #[cfg(unix)]
+    let bin = cheka_bin();
+    let mut child = command(bin)
+        .arg("install")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("No pude ejecutar cheka: {e}"))?;
+    let forward = |stream: Box<dyn std::io::Read + Send>, error: bool, app: AppHandle| {
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                let _ = app.emit("setup-output", OutputLine { line, error });
+            }
+        })
+    };
+    let out = forward(Box::new(child.stdout.take().unwrap()), false, app.clone());
+    let err = forward(Box::new(child.stderr.take().unwrap()), true, app.clone());
+    std::thread::spawn(move || {
+        let ok = child.wait().is_ok_and(|s| s.success());
+        let _ = out.join();
+        let _ = err.join();
+        let _ = app.emit("setup-done", ok);
+    });
+    Ok(())
+}
+
 // ------------------------------------------------------------------ acciones ----
 
 /// Comando de cheka como el usuario (lista blanca).
@@ -479,7 +574,9 @@ fn main() {
             run_root,
             new_project,
             open_url,
-            open_path
+            open_path,
+            setup_state,
+            run_setup
         ])
         .setup(|app| {
             let handle = app.handle().clone();
