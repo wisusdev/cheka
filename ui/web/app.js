@@ -6,6 +6,15 @@ const { listen } = window.__TAURI__.event;
 
 const state = { sites: [], versions: [], status: null, page: "sites", creating: false, error: null };
 
+/** En Windows cambian algunos textos (UAC en vez de contraseña, rutas, origen de PHP). */
+const WIN = navigator.userAgent.includes("Windows");
+const INSTALL_CMD = WIN ? ".\\target\\release\\cheka.exe install" : "sudo ./target/release/cheka install";
+const PHP_ORIGIN = (source) => (source === "apt" ? "paquete del sistema" : WIN ? "zip de windows.php.net" : "binario estático");
+if (WIN) {
+  for (const el of document.querySelectorAll("[data-win]")) el.textContent = el.dataset.win;
+  for (const el of document.querySelectorAll("[data-win-placeholder]")) el.placeholder = el.dataset.winPlaceholder;
+}
+
 // ------------------------------------------------------------------ utilidades ----
 
 const $ = (sel) => document.querySelector(sel);
@@ -95,9 +104,9 @@ function renderBanner() {
   const detail =
     outdated
       ? ["El cheka instalado es anterior a este panel. Actualízalo desde el repositorio:\n",
-         h("code", {}, "cargo build --release && sudo ./target/release/cheka install")]
+         h("code", {}, `cargo build --release && ${INSTALL_CMD}`)]
       : missing
-        ? ["No encuentro cheka instalado. Instálalo con ", h("code", {}, "sudo ./target/release/cheka install")]
+        ? ["No encuentro cheka instalado. Instálalo con ", h("code", {}, INSTALL_CMD)]
         : [state.error];
   banner.replaceChildren(h("strong", {}, "No pude leer el estado de cheka. "), ...detail);
 }
@@ -119,7 +128,7 @@ function renderHealth() {
   const set = (id, ok) => ($(id).className = "dot " + (ok == null ? "" : ok ? "ok" : "bad"));
   set("#dot-daemon", st?.daemon);
   set("#dot-dns", st ? Boolean(st.dns) : null);
-  set("#dot-apache", st ? st.services.some((s) => s.name === "apache2" && s.state === "active") : null);
+  set("#dot-apache", st ? st.services.some((s) => (s.name === "apache2" || s.name === "cheka-apache") && s.state === "active") : null);
   $("#sites-count").textContent = state.sites.length || "";
 }
 
@@ -275,7 +284,7 @@ function renderVersions() {
         { class: v.default ? "card default" : "card" },
         h("div", { class: "version" }, `PHP ${v.version}`),
         h("div", { class: "meta" },
-          v.installed ? `${u?.current ? u.current.split("-")[0] + " · " : ""}${v.source === "apt" ? "paquete del sistema" : "binario estático"}` : "No instalada",
+          v.installed ? `${u?.current ? u.current.split("-")[0] + " · " : ""}${PHP_ORIGIN(v.source)}` : "No instalada",
           v.default ? " · por defecto" : "",
           used ? ` · ${used} sitio${used > 1 ? "s" : ""}` : ""),
         u?.available && h("div", {}, h("span", { class: "badge update" }, `Nueva versión: ${u.latest.split("-")[0]}`)),
@@ -334,7 +343,7 @@ function renderPhpDetailHeader() {
   const info = state.phpInfo;
   if (!info) return;
   $("#pd-title").textContent = `PHP ${info.full_version}`;
-  $("#pd-sub").textContent = info.source === "apt" ? "Paquete del sistema (apt)" : "Binario estático de cheka";
+  $("#pd-sub").textContent = info.source === "apt" ? "Paquete del sistema (apt)" : WIN ? "Zip oficial de windows.php.net" : "Binario estático de cheka";
   $("#pd-actions").replaceChildren(...[updateButton(info.version)].filter(Boolean));
 }
 
@@ -507,7 +516,7 @@ async function showServiceLogs(service) {
       h("pre", { class: "console" }, lines.length ? lines.join("\n") : "(vacío)"),
     ];
     $("#service-logs-body").replaceChildren(
-      ...block("journal de systemd", logs.journal),
+      ...(WIN && !logs.journal.length ? [] : block("journal de systemd", logs.journal)),
       ...logs.files.flatMap((f) => block(f.file, f.lines))
     );
     for (const pre of $("#service-logs-body").querySelectorAll("pre")) pre.scrollTop = pre.scrollHeight;
@@ -744,7 +753,7 @@ function renderTools() {
                   state.toolOpen.has(t.id) ? "Ocultar" : "Detalles"),
                 h("div", {}, h("span", { class: "name" }, t.name), " ",
                   t.installed && h("span", { class: "badge ok" }, "instalada"),
-                  t.needs_root && !t.installed && h("span", { class: "badge", title: "Pide tu contraseña" }, "sistema")),
+                  t.needs_root && !t.installed && h("span", { class: "badge", title: WIN ? "Pide permisos de administrador" : "Pide tu contraseña" }, "sistema")),
                 t.installed && state.toolInfo[t.id] && h("div", { class: "meta", title: state.toolInfo[t.id].path ?? "" },
                   h("span", { class: "ver" }, state.toolInfo[t.id].version ?? "?"),
                   state.toolInfo[t.id].path ? ` · ${state.toolInfo[t.id].path}` : ""),

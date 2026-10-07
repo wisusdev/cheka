@@ -433,6 +433,36 @@ pub fn user_sid(user: &str) -> Result<String> {
     Ok(sid)
 }
 
+// ----------------------------------------------------------------------- DNS ----
+
+const NRPT_COMMENT: &str = "cheka";
+
+/// Regla NRPT `.test → 127.0.0.1`: Windows pregunta solo esos nombres al DNS del daemon
+/// (equivale al `~test` de systemd-resolved en Linux). Idempotente.
+pub fn install_nrpt() -> Result<()> {
+    let tld = crate::layout::TLD;
+    let script = format!(
+        "Get-DnsClientNrptRule | Where-Object {{ $_.Comment -eq '{NRPT_COMMENT}' -or $_.Namespace -contains '.{tld}' }} | \
+         Remove-DnsClientNrptRule -Force; \
+         Add-DnsClientNrptRule -Namespace '.{tld}' -NameServers '127.0.0.1' -Comment '{NRPT_COMMENT}' | Out-Null; \
+         Clear-DnsClientCache"
+    );
+    let out = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output()?;
+    if !out.status.success() {
+        bail!("No pude crear la regla DNS para .{tld}: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
+}
+
+pub fn remove_nrpt() -> Result<()> {
+    let script = format!(
+        "Get-DnsClientNrptRule | Where-Object {{ $_.Comment -eq '{NRPT_COMMENT}' }} | Remove-DnsClientNrptRule -Force; \
+         Clear-DnsClientCache"
+    );
+    let _ = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output()?;
+    Ok(())
+}
+
 // --------------------------------------------------------------------- hosts ----
 
 const HOSTS_BEGIN: &str = "# >>> cheka (generado por cheka, no editar este bloque)";
@@ -454,10 +484,9 @@ fn hosts_without_block(text: &str) -> String {
     }
 }
 
-/// Windows no tiene un resolver por sufijo: cada sitio va al archivo `hosts` (sin
-/// comodines, así que los subsitios de Multisite necesitan `cheka link` propio).
-/// `cheka-check.test` sirve para que `cheka status` compruebe que funciona.
-/// Devuelve si cambió el archivo.
+/// Respaldo del DNS de cheka: cada sitio también va al archivo `hosts`, por si un navegador
+/// usa DNS cifrado (DoH) y no respeta la regla NRPT. Los subdominios (`*.sitio.test`) los
+/// resuelve el DNS del daemon. Devuelve si cambió el archivo.
 pub fn sync_hosts(l: &Layout, sites: &[String]) -> Result<bool> {
     let path = l.hosts_file();
     let current = match fs::read(&path) {
@@ -467,8 +496,7 @@ pub fn sync_hosts(l: &Layout, sites: &[String]) -> Result<bool> {
         Err(e) => return Err(e).with_context(|| format!("No pude leer {}", path.display())),
     };
     let mut text = hosts_without_block(&current);
-    let mut names: Vec<String> = sites.iter().map(|s| format!("{s}.{}", crate::layout::TLD)).collect();
-    names.insert(0, format!("cheka-check.{}", crate::layout::TLD));
+    let names: Vec<String> = sites.iter().map(|s| format!("{s}.{}", crate::layout::TLD)).collect();
     if !text.is_empty() {
         text.push_str("\r\n\r\n");
     }
@@ -682,7 +710,7 @@ mod tests {
         assert!(sync_hosts(&l, &["blog".into(), "tienda".into()]).unwrap());
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.starts_with(original.trim_end()));
-        assert!(text.contains("127.0.0.1 cheka-check.test\r\n127.0.0.1 blog.test\r\n127.0.0.1 tienda.test\r\n"));
+        assert!(text.contains("no editar este bloque)\r\n127.0.0.1 blog.test\r\n127.0.0.1 tienda.test\r\n# <<< cheka"));
         // idempotente
         assert!(!sync_hosts(&l, &["blog".into(), "tienda".into()]).unwrap());
         // un sitio menos

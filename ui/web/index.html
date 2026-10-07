@@ -42,7 +42,7 @@
         </div>
       </header>
       <form class="inline-form hidden" id="link-form">
-        <input type="text" id="link-path" placeholder="/home/usuario/proyectos/mi-app" required aria-label="Carpeta">
+        <input type="text" id="link-path" placeholder="/home/usuario/proyectos/mi-app" data-win-placeholder="C:\Users\usuario\proyectos\mi-app" required aria-label="Carpeta">
         <input type="text" id="link-name" placeholder="nombre (opcional)" aria-label="Nombre">
         <button class="btn primary" type="submit">Enlazar</button>
         <button class="btn ghost" type="button" id="link-cancel">Cancelar</button>
@@ -56,7 +56,7 @@
         </table>
         <div class="empty hidden" id="sites-empty">
           <h2>No hay sitios todavía</h2>
-          <p>Crea o clona un proyecto en <code>~/Sites</code>, o usa <strong>Nuevo proyecto</strong>.</p>
+          <p>Crea o clona un proyecto en <code data-win="%USERPROFILE%\Sites">~/Sites</code>, o usa <strong>Nuevo proyecto</strong>.</p>
         </div>
       </div>
     </section>
@@ -67,7 +67,7 @@
         <header class="page-head">
           <div>
             <h1>Versiones de PHP</h1>
-            <p class="muted">Cada sitio puede usar su propia versión. Instalar o actualizar una versión pide tu contraseña.</p>
+            <p class="muted" data-win="Cada sitio puede usar su propia versión. Instalar o actualizar una versión pide permisos de administrador.">Cada sitio puede usar su propia versión. Instalar o actualizar una versión pide tu contraseña.</p>
           </div>
           <div class="head-actions">
             <span class="muted small" id="php-updates-note"></span>
@@ -121,7 +121,7 @@
       <header class="page-head">
         <div>
           <h1>Servicios</h1>
-          <p class="muted">Gestiona cada servicio por separado. Iniciar, detener o reiniciar pide tu contraseña.</p>
+          <p class="muted" data-win="Gestiona cada servicio por separado. Iniciar, detener o reiniciar pide permisos de administrador.">Gestiona cada servicio por separado. Iniciar, detener o reiniciar pide tu contraseña.</p>
         </div>
         <div class="head-actions">
           <span class="muted small">Todos:</span>
@@ -207,7 +207,7 @@
       <header class="page-head">
         <div>
           <h1>Herramientas</h1>
-          <p class="muted">Navegadores, editores, lenguajes y bases de datos. Pide tu contraseña una sola vez si hace falta.</p>
+          <p class="muted" data-win="Navegadores, editores, lenguajes y bases de datos. Pide permisos de administrador una sola vez si hace falta.">Navegadores, editores, lenguajes y bases de datos. Pide tu contraseña una sola vez si hace falta.</p>
         </div>
         <div class="head-actions">
           <button class="btn primary hidden" id="tools-install">Instalar seleccionadas</button>

@@ -378,6 +378,15 @@ fn run_daemon(ctx: &Ctx) -> Result<()> {
     }
     let lock = Arc::new(Mutex::new(()));
     let endpoint = transport::serve(ctx, &lock)?;
+    // Windows: DNS de *.test (la regla NRPT de `install` manda aquí esas consultas). En
+    // Linux lo hace dnsmasq (cheka-dns.service).
+    #[cfg(windows)]
+    if !ctx.layout.is_test() {
+        match crate::dns::spawn("127.0.0.1:53", crate::layout::TLD) {
+            Ok(()) => println!("DNS de *.{} en 127.0.0.1:53", crate::layout::TLD),
+            Err(e) => eprintln!("No pude abrir el DNS en 127.0.0.1:53 ({e}); solo funcionará el archivo hosts"),
+        }
+    }
     println!("cheka daemon escuchando en {endpoint} (usuario: {})", ctx.id.user);
 
     // Estado inicial al arrancar.

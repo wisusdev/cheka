@@ -186,6 +186,7 @@ pub struct ServiceDetail {
 }
 
 /// Servicios que cheka gestiona: (id, nombre visible).
+#[cfg(unix)]
 pub fn service_ids() -> Vec<(String, String)> {
     let mut list: Vec<(String, String)> = [
         ("apache2", "Apache"),
@@ -204,6 +205,7 @@ pub fn service_ids() -> Vec<(String, String)> {
     list
 }
 
+#[cfg(unix)]
 fn systemd_props(unit: &str) -> std::collections::BTreeMap<String, String> {
     Command::new("systemctl")
         .args(["show", unit, "--timestamp=unix", "-p", "ActiveState,MainPID,MemoryCurrent,ActiveEnterTimestamp,UnitFileState"])
@@ -227,6 +229,7 @@ fn version_of(program: &str, args: &[&str], re: &str) -> Option<String> {
 }
 
 /// Puertos TCP/UDP en escucha (sin root no se ve el proceso, solo el puerto).
+#[cfg(unix)]
 fn listening_ports() -> (std::collections::BTreeSet<u16>, std::collections::BTreeSet<u16>) {
     let ports = |flag: &str| -> std::collections::BTreeSet<u16> {
         Command::new("ss")
@@ -243,6 +246,7 @@ fn listening_ports() -> (std::collections::BTreeSet<u16>, std::collections::BTre
     (ports("-ltn"), ports("-lun"))
 }
 
+#[cfg(unix)]
 pub fn services(ctx: &Ctx) -> Vec<ServiceDetail> {
     let (tcp, udp) = listening_ports();
     let port = |p: u16, proto: &str| {
@@ -309,6 +313,138 @@ pub fn services(ctx: &Ctx) -> Vec<ServiceDetail> {
                 pid,
                 memory_bytes,
                 uptime_secs,
+                version,
+                listen,
+                config,
+                log_files,
+            }
+        })
+        .collect()
+}
+
+// ------------------------------------------------------- servicios (Windows) ----
+
+/// Windows: Apache, MariaDB y el daemon (PHP no es un servicio: lo arranca mod_fcgid).
+#[cfg(windows)]
+pub fn service_ids() -> Vec<(String, String)> {
+    use crate::windows_setup::{APACHE_SERVICE, MARIADB_SERVICE};
+    [(APACHE_SERVICE, "Apache"), (MARIADB_SERVICE, "MariaDB"), (crate::daemon::SERVICE_NAME, "Daemon de cheka")]
+        .iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect()
+}
+
+/// Puertos TCP en escucha (`netstat -ano`).
+#[cfg(windows)]
+fn listening_tcp() -> std::collections::BTreeSet<u16> {
+    Command::new("netstat")
+        .args(["-ano", "-p", "TCP"])
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter(|l| l.contains("LISTENING"))
+                .filter_map(|l| l.split_whitespace().nth(1)?.rsplit(':').next()?.parse().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// PID del proceso de un servicio (`sc queryex`).
+#[cfg(windows)]
+fn service_pid(name: &str) -> Option<u32> {
+    let out = Command::new("sc.exe").args(["queryex", name]).stderr(Stdio::null()).output().ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|l| l.trim_start().starts_with("PID"))
+        .and_then(|l| l.split(':').nth(1)?.trim().parse().ok())
+        .filter(|p| *p > 0)
+}
+
+/// Memoria (bytes) e inicio (Unix) de varios procesos con una sola llamada a PowerShell.
+#[cfg(windows)]
+fn process_facts(pids: &[u32]) -> std::collections::BTreeMap<u32, (u64, u64)> {
+    if pids.is_empty() {
+        return Default::default();
+    }
+    let ids = pids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    let script = format!(
+        "Get-Process -Id {ids} -ErrorAction SilentlyContinue | ForEach-Object {{ \
+         $t = if ($_.StartTime) {{ ([DateTimeOffset]$_.StartTime).ToUnixTimeSeconds() }} else {{ 0 }}; \
+         \"$($_.Id) $($_.WorkingSet64) $t\" }}"
+    );
+    Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .stderr(Stdio::null())
+        .output()
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .filter_map(|l| {
+                    let mut it = l.split_whitespace().map(|x| x.parse::<u64>().ok());
+                    Some((it.next()?? as u32, (it.next()??, it.next()??)))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(windows)]
+pub fn services(ctx: &Ctx) -> Vec<ServiceDetail> {
+    use crate::system::windows_service_state;
+    use crate::windows_setup::{self, APACHE_SERVICE, MARIADB_SERVICE};
+    let tcp = listening_tcp();
+    let port = |p: u16| format!("TCP {p}{}", if tcp.contains(&p) { "" } else { " (cerrado)" });
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let ids = service_ids();
+    let pids: Vec<Option<u32>> = ids.iter().map(|(id, _)| service_pid(id)).collect();
+    let facts = process_facts(&pids.iter().flatten().copied().collect::<Vec<_>>());
+    ids.into_iter()
+        .zip(pids)
+        .map(|((id, label), pid)| {
+            let state = windows_service_state(&id).unwrap_or("no instalado").to_string();
+            let enabled = Command::new("sc.exe")
+                .args(["qc", &id])
+                .stderr(Stdio::null())
+                .output()
+                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("AUTO_START"));
+            let fact = pid.and_then(|p| facts.get(&p)).filter(|_| state == "active");
+            let (version, listen, config, log_files) = if id == APACHE_SERVICE {
+                let dir = windows_setup::apache_dir(&ctx.layout);
+                (
+                    version_of(&windows_setup::httpd(&ctx.layout).display().to_string(), &["-v"], r"Apache/(\S+)"),
+                    vec![port(80), port(443)],
+                    Some(dir.join(r"conf\httpd.conf").display().to_string()),
+                    vec![dir.join(r"logs\error.log").display().to_string()],
+                )
+            } else if id == MARIADB_SERVICE {
+                let bin = windows_setup::mariadb_bin("mariadb");
+                let data = bin.parent().and_then(|b| b.parent()).map(|d| d.join("data"));
+                let host = std::env::var("COMPUTERNAME").unwrap_or_default();
+                (
+                    version_of(&bin.display().to_string(), &["--version"], r"(\d+\.\d+\.\d+)-MariaDB"),
+                    vec![port(3306)],
+                    data.as_ref().map(|d| d.join("my.ini").display().to_string()),
+                    data.map(|d| vec![d.join(format!("{host}.err")).display().to_string()]).unwrap_or_default(),
+                )
+            } else {
+                (
+                    Some(env!("CARGO_PKG_VERSION").to_string()),
+                    vec![format!("pipe {}", ctx.layout.socket().display())],
+                    Some(ctx.state.conf.join(crate::state::TOML_FILE).display().to_string()),
+                    vec![ctx.layout.log_dir.join("cheka-daemon.log").display().to_string()],
+                )
+            };
+            ServiceDetail {
+                id,
+                label,
+                enabled,
+                pid: pid.filter(|_| state == "active"),
+                memory_bytes: fact.map(|f| f.0),
+                // Sin permisos de administrador Windows no da la hora de inicio (0).
+                uptime_secs: fact.filter(|f| f.1 > 0).map(|f| now.saturating_sub(f.1)),
+                state,
                 version,
                 listen,
                 config,

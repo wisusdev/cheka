@@ -1,7 +1,11 @@
 //! Panel y bandeja de cheka (Tauri). Es otro cliente del núcleo, igual que la CLI: usa el
 //! `cheka` instalado como motor (JSON para leer, los mismos comandos para modificar), así
 //! que se comporta exactamente igual que la terminal. Las acciones de root pasan por
-//! `pkexec` (diálogo gráfico de contraseña).
+//! `pkexec` (diálogo gráfico de contraseña) en Linux; en Windows las eleva el propio
+//! `cheka` con la ventana de UAC.
+
+// En Windows, sin consola detrás de la ventana (solo en la versión release).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -21,9 +25,8 @@ const USER_COMMANDS: &[&str] = &[
     "secure", "unsecure", "isolate", "unisolate", "use", "docroot", "link", "unlink", "refresh", "park", "forget",
     "php:ini", "php:ext",
 ];
-/// Comandos que requieren root (vía pkexec).
+/// Comandos que requieren root (vía pkexec en Linux, UAC en Windows).
 const ROOT_COMMANDS: &[&str] = &["start", "stop", "restart", "php:install", "php:update", "php:ext", "service"];
-const LOG_DIR: &str = "/var/log/cheka";
 const TRAY_ID: &str = "cheka";
 
 /// Nombres de sitio de la bandeja actual, para no reconstruir el menú si no cambió.
@@ -37,16 +40,58 @@ struct CmdOut {
     stderr: String,
 }
 
+/// Carpeta de cheka en Windows (`%ProgramData%\cheka`).
+#[cfg(windows)]
+fn program_data() -> PathBuf {
+    PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| "C:/ProgramData".into())).join("cheka")
+}
+
 /// Binario de cheka: `CHEKA_BIN` (desarrollo) o el instalado.
 fn cheka_bin() -> PathBuf {
     if let Some(b) = std::env::var_os("CHEKA_BIN") {
         return PathBuf::from(b);
     }
+    #[cfg(windows)]
+    return program_data().join("bin").join("cheka.exe");
+    #[cfg(unix)]
     PathBuf::from("/usr/local/bin/cheka")
 }
 
+/// Logs de Apache y PHP de los sitios.
+fn log_dir() -> PathBuf {
+    #[cfg(windows)]
+    return program_data().join("logs");
+    #[cfg(unix)]
+    PathBuf::from("/var/log/cheka")
+}
+
+/// `Command` que en Windows no abre una consola por cada llamada a cheka.
+fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
+/// `cheka …` como root: con `pkexec` en Linux; en Windows cheka mismo pide UAC.
+fn root_command() -> Command {
+    #[cfg(windows)]
+    return command(cheka_bin());
+    #[cfg(unix)]
+    {
+        let mut cmd = command("pkexec");
+        cmd.arg(cheka_bin());
+        cmd
+    }
+}
+
 fn run_cheka(args: &[String], cwd: Option<&Path>) -> Result<CmdOut, String> {
-    let mut cmd = Command::new(cheka_bin());
+    let mut cmd = command(cheka_bin());
     cmd.args(args).stdin(Stdio::null());
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
@@ -204,8 +249,8 @@ async fn install_tools(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
         let all: Vec<String> = steps.iter().map(|(id, _)| id.clone()).collect();
         let mut root_ok = std::collections::BTreeMap::new();
         if steps.iter().any(|(_, root)| *root) {
-            let mut cmd = Command::new("pkexec");
-            cmd.arg(cheka_bin()).args(["tools", "_root"]).args(&all);
+            let mut cmd = root_command();
+            cmd.args(["tools", "_root"]).args(&all);
             root_ok = stream_tools_phase(&app, cmd);
             if root_ok.is_empty() {
                 let _ = app.emit("tools-output", OutputLine { line: "Se canceló la autorización".into(), error: true });
@@ -218,7 +263,7 @@ async fn install_tools(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
             .collect();
         let mut user_ok = std::collections::BTreeMap::new();
         if !user_ids.is_empty() {
-            let mut cmd = Command::new(cheka_bin());
+            let mut cmd = command(cheka_bin());
             cmd.args(["tools", "_user"]).args(&user_ids);
             user_ok = stream_tools_phase(&app, cmd);
         }
@@ -242,7 +287,7 @@ async fn read_log(site: String, php: String) -> Result<Value, String> {
         return Err("Sitio o versión inválidos".into());
     }
     let tail = |file: String| -> Value {
-        let path = Path::new(LOG_DIR).join(&file);
+        let path = log_dir().join(&file);
         match std::fs::read_to_string(&path) {
             Ok(text) => {
                 let lines: Vec<&str> = text.lines().collect();
@@ -299,12 +344,11 @@ async fn run_root(args: Vec<String>) -> Result<CmdOut, String> {
     if args.first().is_some_and(|c| c == "php:ext") && args.get(2).is_none_or(|a| a != "install") {
         return Err("Solo la instalación de extensiones requiere permisos de administrador".into());
     }
-    let out = Command::new("pkexec")
-        .arg(cheka_bin())
+    let out = root_command()
         .args(&args)
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| format!("No pude ejecutar pkexec: {e}"))?;
+        .map_err(|e| format!("No pude pedir permisos de administrador: {e}"))?;
     let mut stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     // 126/127: el usuario canceló el diálogo o no se autorizó
     if matches!(out.status.code(), Some(126) | Some(127)) && stderr.trim().is_empty() {
@@ -323,7 +367,7 @@ struct OutputLine {
 /// (evento `new-output`) y el resultado al terminar (evento `new-done`).
 #[tauri::command]
 async fn new_project(app: AppHandle, args: Vec<String>) -> Result<(), String> {
-    let mut child = Command::new(cheka_bin())
+    let mut child = command(cheka_bin())
         .arg("new")
         .args(&args)
         .stdin(Stdio::null())
@@ -450,8 +494,7 @@ fn main() {
                     "restart" => {
                         let app = app.clone();
                         std::thread::spawn(move || {
-                            let ok = Command::new("pkexec")
-                                .arg(cheka_bin())
+                            let ok = root_command()
                                 .arg("restart")
                                 .status()
                                 .is_ok_and(|s| s.success());

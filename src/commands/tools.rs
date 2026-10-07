@@ -173,6 +173,14 @@ pub fn info(ctx: &Ctx, args: &[String]) -> Result<()> {
 }
 
 pub fn tools(ctx: &Ctx, args: &[String]) -> Result<()> {
+    // El catálogo es de Ubuntu (apt y bash). En Windows aún no hay uno: lista vacía.
+    if cfg!(windows) {
+        if args.iter().any(|a| a == "--json") {
+            println!("[]");
+            return Ok(());
+        }
+        bail!("'cheka tools' todavía no tiene catálogo para Windows; usa winget para instalar herramientas");
+    }
     match args.first().map(String::as_str) {
         Some("info") => info(ctx, &args[1..]),
         Some("plan") => plan(&args[1..]),
