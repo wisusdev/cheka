@@ -37,6 +37,10 @@ pub fn list(ctx: &Ctx, args: &[String]) -> Result<()> {
 
 /// `tools _root <ids…>` (root): pasos de root, con una línea marcadora por herramienta.
 pub fn run_root(ctx: &Ctx, args: &[String]) -> Result<()> {
+    // En Windows cheka se eleva solo (UAC) y su salida vuelve por la misma terminal.
+    if cfg!(windows) {
+        ctx.ensure_root()?;
+    }
     if !ctx.is_root() {
         bail!("Uso interno: lo ejecuta 'cheka tools install' con sudo");
     }
@@ -52,7 +56,8 @@ pub fn run_root(ctx: &Ctx, args: &[String]) -> Result<()> {
 
 /// `tools _user <ids…>`: pasos del usuario, con una línea marcadora por herramienta.
 pub fn run_user(ctx: &Ctx, args: &[String]) -> Result<()> {
-    if is_root() && ctx.id.user != "root" {
+    // En Windows una terminal de administrador es la misma cuenta: no hay problema de dueños.
+    if !cfg!(windows) && is_root() && ctx.id.user != "root" {
         bail!("Los pasos del usuario no deben correr como root");
     }
     for t in tools::resolve(&ids_of(args))? {
@@ -84,7 +89,7 @@ fn run_phase(program: &str, args: &[String]) -> Result<BTreeMap<String, bool>> {
 /// `tools install <ids…>`: pide la contraseña una vez para los pasos de root y luego hace
 /// los del usuario como él.
 pub fn install(args: &[String]) -> Result<()> {
-    if is_root() {
+    if !cfg!(windows) && is_root() {
         bail!("Ejecuta 'cheka tools install' con tu usuario (sin sudo): pedirá la contraseña solo para los pasos que la necesitan");
     }
     let ids = ids_of(args);
@@ -97,9 +102,14 @@ pub fn install(args: &[String]) -> Result<()> {
 
     let mut root_ok: BTreeMap<String, bool> = BTreeMap::new();
     if selected.iter().any(|t| !t.root.trim().is_empty()) {
-        let mut a = vec!["--".to_string(), exe.clone(), "tools".into(), "_root".into()];
+        // Linux: `sudo cheka tools _root …`; Windows: cheka mismo pide UAC.
+        let (program, mut a) = if cfg!(windows) {
+            (exe.clone(), vec!["tools".to_string(), "_root".into()])
+        } else {
+            ("sudo".to_string(), vec!["--".to_string(), exe.clone(), "tools".into(), "_root".into()])
+        };
         a.extend(ids.iter().cloned());
-        root_ok = run_phase("sudo", &a)?;
+        root_ok = run_phase(&program, &a)?;
     }
     // La parte del usuario solo para lo que no falló como root.
     let user_ids: Vec<String> = ids.iter().filter(|id| root_ok.get(*id).copied().unwrap_or(true)).cloned().collect();
@@ -122,7 +132,11 @@ pub fn install(args: &[String]) -> Result<()> {
         }
     }
     if selected.iter().any(|t| t.user.contains("add_path") || t.user.contains("add_env")) {
-        ui::info("Abre una terminal nueva (o ejecuta: source ~/.bashrc) para cargar el PATH.");
+        ui::info(if cfg!(windows) {
+            "Abre una terminal nueva para cargar el PATH."
+        } else {
+            "Abre una terminal nueva (o ejecuta: source ~/.bashrc) para cargar el PATH."
+        });
     }
     if failed > 0 {
         return Err(crate::Reported.into());

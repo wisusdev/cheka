@@ -105,9 +105,12 @@ pub fn timezone() -> String {
         .unwrap_or_else(|| "UTC".to_string())
 }
 
-/// Windows usa nombres propios de zona horaria ("Central America Standard Time"), no los
-/// de IANA que espera PHP: se usa `TZ` si está definida, si no UTC.
+/// Windows: `TZ` si tiene un nombre IANA; si no, la zona del sistema convertida a IANA.
 #[cfg(windows)]
 pub fn timezone() -> String {
-    std::env::var("TZ").ok().filter(|s| s.contains('/')).unwrap_or_else(|| "UTC".to_string())
+    std::env::var("TZ")
+        .ok()
+        .filter(|s| s.contains('/'))
+        .or_else(crate::platform::iana_timezone)
+        .unwrap_or_else(|| "UTC".to_string())
 }

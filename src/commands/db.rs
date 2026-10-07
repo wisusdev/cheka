@@ -1,5 +1,5 @@
-//! `cheka db …` sobre MariaDB: como el usuario, por socket, en Linux; con el usuario de
-//! `[db]` por 127.0.0.1 en Windows (allí no existe `unix_socket`).
+//! `cheka db …` sobre MariaDB, como el usuario y sin contraseña: por socket (`unix_socket`)
+//! en Linux y por named pipe (`named_pipe`, con tu usuario de Windows) en Windows.
 
 use std::fs::File;
 use std::io::{BufRead, IsTerminal, Write};
@@ -23,10 +23,12 @@ fn client(_ctx: &Ctx, program: &str) -> Command {
     Command::new(program)
 }
 
+/// Windows: el `[client]` del my.ini de MariaDB (lo deja `cheka install`) dice pipe y tu
+/// usuario; se pasa explícito por si el cliente no lo busca ahí.
 #[cfg(windows)]
-fn client(ctx: &Ctx, program: &str) -> Command {
+fn client(_ctx: &Ctx, program: &str) -> Command {
     let mut cmd = Command::new(crate::windows_setup::mariadb_bin(program));
-    cmd.args(["-u", &ctx.state.db_user, "-h", "127.0.0.1"]).env("MYSQL_PWD", &ctx.state.db_password);
+    cmd.arg(format!("--defaults-extra-file={}", crate::windows_setup::mariadb_ini().display()));
     cmd
 }
 
@@ -124,12 +126,21 @@ pub fn db(ctx: &Ctx, args: &[String]) -> Result<()> {
             if !std::path::Path::new(file).is_file() {
                 bail!("No existe {file}");
             }
-            if cfg!(windows) && file.ends_with(".gz") {
-                bail!("En Windows, descomprime primero el archivo (p. ej. con 7-Zip) e importa el .sql");
-            }
             sql(ctx, &create_sql(&name))?;
             let mut mariadb = client(ctx, "mariadb");
             mariadb.arg(&name);
+            // Windows no trae zcat: se descomprime aquí mismo.
+            #[cfg(windows)]
+            if file.ends_with(".gz") {
+                let mut m = mariadb.stdin(Stdio::piped()).spawn()?;
+                let mut stdin = m.stdin.take().unwrap();
+                std::io::copy(&mut flate2::read::GzDecoder::new(File::open(file)?), &mut stdin)
+                    .context("No pude descomprimir el archivo")?;
+                drop(stdin);
+                wait_ok(&mut m, "mariadb")?;
+                ui::ok(format!("Importado {file} en '{name}'"));
+                return Ok(());
+            }
             if file.ends_with(".gz") {
                 let mut zcat = Command::new("zcat").arg(file).stdout(Stdio::piped()).spawn()?;
                 let mut m = mariadb.stdin(zcat.stdout.take().unwrap()).spawn()?;
@@ -146,32 +157,34 @@ pub fn db(ctx: &Ctx, args: &[String]) -> Result<()> {
             valid(&name)?;
             let out = match rest.get(1) {
                 Some(o) => o.clone(),
-                None => format!("{name}-{}.{}", timestamp()?, if cfg!(windows) { "sql" } else { "sql.gz" }),
+                None => format!("{name}-{}.sql.gz", timestamp()?),
             };
-            // Windows no trae gzip: el volcado queda sin comprimir.
-            if cfg!(windows) {
-                if out.ends_with(".gz") {
-                    bail!("En Windows el volcado se guarda sin comprimir: usa un nombre terminado en .sql");
-                }
-                let st = client(ctx, "mariadb-dump")
+            // Windows no trae gzip: se comprime aquí mismo.
+            #[cfg(windows)]
+            {
+                let mut dump = client(ctx, "mariadb-dump")
                     .args(["--single-transaction", "--routines", &name])
-                    .stdout(File::create(&out)?)
-                    .status()?;
-                if !st.success() {
-                    bail!("mariadb-dump falló");
-                }
+                    .stdout(Stdio::piped())
+                    .spawn()?;
+                let mut gz = flate2::write::GzEncoder::new(File::create(&out)?, flate2::Compression::default());
+                std::io::copy(&mut dump.stdout.take().unwrap(), &mut gz)?;
+                gz.finish()?;
+                wait_ok(&mut dump, "mariadb-dump")?;
                 ui::ok(format!("Exportado a {out}"));
                 return Ok(());
             }
-            let mut dump = client(ctx, "mariadb-dump")
-                .args(["--single-transaction", "--routines", &name])
-                .stdout(Stdio::piped())
-                .spawn()?;
-            let mut gzip =
-                Command::new("gzip").stdin(dump.stdout.take().unwrap()).stdout(File::create(&out)?).spawn()?;
-            wait_ok(&mut dump, "mariadb-dump")?;
-            wait_ok(&mut gzip, "gzip")?;
-            ui::ok(format!("Exportado a {out}"));
+            #[cfg(unix)]
+            {
+                let mut dump = client(ctx, "mariadb-dump")
+                    .args(["--single-transaction", "--routines", &name])
+                    .stdout(Stdio::piped())
+                    .spawn()?;
+                let mut gzip =
+                    Command::new("gzip").stdin(dump.stdout.take().unwrap()).stdout(File::create(&out)?).spawn()?;
+                wait_ok(&mut dump, "mariadb-dump")?;
+                wait_ok(&mut gzip, "gzip")?;
+                ui::ok(format!("Exportado a {out}"));
+            }
         }
         _ => print!(
             "Uso: cheka db <create|drop|list|import|export> [...]

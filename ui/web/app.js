@@ -6,6 +6,15 @@ const { listen } = window.__TAURI__.event;
 
 const state = { sites: [], versions: [], status: null, page: "sites", creating: false, error: null };
 
+/** En Windows cambian algunos textos (UAC en vez de contraseña, rutas, origen de PHP). */
+const WIN = navigator.userAgent.includes("Windows");
+const INSTALL_CMD = WIN ? ".\\target\\release\\cheka.exe install" : "sudo ./target/release/cheka install";
+const PHP_ORIGIN = (source) => (source === "apt" ? "paquete del sistema" : WIN ? "zip de windows.php.net" : "binario estático");
+if (WIN) {
+  for (const el of document.querySelectorAll("[data-win]")) el.textContent = el.dataset.win;
+  for (const el of document.querySelectorAll("[data-win-placeholder]")) el.placeholder = el.dataset.winPlaceholder;
+}
+
 // ------------------------------------------------------------------ utilidades ----
 
 const $ = (sel) => document.querySelector(sel);
@@ -95,9 +104,9 @@ function renderBanner() {
   const detail =
     outdated
       ? ["El cheka instalado es anterior a este panel. Actualízalo desde el repositorio:\n",
-         h("code", {}, "cargo build --release && sudo ./target/release/cheka install")]
+         h("code", {}, `cargo build --release && ${INSTALL_CMD}`)]
       : missing
-        ? ["No encuentro cheka instalado. Instálalo con ", h("code", {}, "sudo ./target/release/cheka install")]
+        ? ["No encuentro cheka instalado. Instálalo con ", h("code", {}, INSTALL_CMD)]
         : [state.error];
   banner.replaceChildren(h("strong", {}, "No pude leer el estado de cheka. "), ...detail);
 }
@@ -119,7 +128,7 @@ function renderHealth() {
   const set = (id, ok) => ($(id).className = "dot " + (ok == null ? "" : ok ? "ok" : "bad"));
   set("#dot-daemon", st?.daemon);
   set("#dot-dns", st ? Boolean(st.dns) : null);
-  set("#dot-apache", st ? st.services.some((s) => s.name === "apache2" && s.state === "active") : null);
+  set("#dot-apache", st ? st.services.some((s) => (s.name === "apache2" || s.name === "cheka-apache") && s.state === "active") : null);
   $("#sites-count").textContent = state.sites.length || "";
 }
 
@@ -275,7 +284,7 @@ function renderVersions() {
         { class: v.default ? "card default" : "card" },
         h("div", { class: "version" }, `PHP ${v.version}`),
         h("div", { class: "meta" },
-          v.installed ? `${u?.current ? u.current.split("-")[0] + " · " : ""}${v.source === "apt" ? "paquete del sistema" : "binario estático"}` : "No instalada",
+          v.installed ? `${u?.current ? u.current.split("-")[0] + " · " : ""}${PHP_ORIGIN(v.source)}` : "No instalada",
           v.default ? " · por defecto" : "",
           used ? ` · ${used} sitio${used > 1 ? "s" : ""}` : ""),
         u?.available && h("div", {}, h("span", { class: "badge update" }, `Nueva versión: ${u.latest.split("-")[0]}`)),
@@ -334,7 +343,7 @@ function renderPhpDetailHeader() {
   const info = state.phpInfo;
   if (!info) return;
   $("#pd-title").textContent = `PHP ${info.full_version}`;
-  $("#pd-sub").textContent = info.source === "apt" ? "Paquete del sistema (apt)" : "Binario estático de cheka";
+  $("#pd-sub").textContent = info.source === "apt" ? "Paquete del sistema (apt)" : WIN ? "Zip oficial de windows.php.net" : "Binario estático de cheka";
   $("#pd-actions").replaceChildren(...[updateButton(info.version)].filter(Boolean));
 }
 
@@ -360,11 +369,13 @@ function renderPhpDetail() {
   // Extensiones
   renderPhpExtensions();
   $("#pd-ext-note").textContent = info.can_manage_extensions
-    ? "Activar o desactivar una extensión solo afecta a cheka; el PHP del sistema no cambia."
+    ? WIN
+      ? "Activar o desactivar una extensión cambia el php.ini de esta versión. Las nuevas se instalan desde PECL."
+      : "Activar o desactivar una extensión solo afecta a cheka; el PHP del sistema no cambia."
     : "Binario estático: sus extensiones vienen compiladas y no se pueden cambiar. Para gestionarlas, usa una versión instalada con apt.";
   $("#pd-install").classList.toggle("hidden", !info.can_manage_extensions || !info.installable.length);
   if (info.can_manage_extensions && info.installable.length) {
-    const sel = h("select", { "aria-label": "Extensión para instalar" }, ...info.installable.map((p) => h("option", { value: p }, `php${info.version}-${p}`)));
+    const sel = h("select", { "aria-label": "Extensión para instalar" }, ...info.installable.map((p) => h("option", { value: p }, WIN ? `${p} (PECL)` : `php${info.version}-${p}`)));
     $("#pd-install").replaceChildren(sel, h("button", { class: "btn", onclick: (e) => detailAction(e.currentTarget, () => runRoot("php:ext", info.version, "install", sel.value)) }, "Instalar extensión"));
   }
 
@@ -507,7 +518,7 @@ async function showServiceLogs(service) {
       h("pre", { class: "console" }, lines.length ? lines.join("\n") : "(vacío)"),
     ];
     $("#service-logs-body").replaceChildren(
-      ...block("journal de systemd", logs.journal),
+      ...(WIN && !logs.journal.length ? [] : block("journal de systemd", logs.journal)),
       ...logs.files.flatMap((f) => block(f.file, f.lines))
     );
     for (const pre of $("#service-logs-body").querySelectorAll("pre")) pre.scrollTop = pre.scrollHeight;
@@ -744,7 +755,7 @@ function renderTools() {
                   state.toolOpen.has(t.id) ? "Ocultar" : "Detalles"),
                 h("div", {}, h("span", { class: "name" }, t.name), " ",
                   t.installed && h("span", { class: "badge ok" }, "instalada"),
-                  t.needs_root && !t.installed && h("span", { class: "badge", title: "Pide tu contraseña" }, "sistema")),
+                  t.needs_root && !t.installed && h("span", { class: "badge", title: WIN ? "Pide permisos de administrador" : "Pide tu contraseña" }, "sistema")),
                 t.installed && state.toolInfo[t.id] && h("div", { class: "meta", title: state.toolInfo[t.id].path ?? "" },
                   h("span", { class: "ver" }, state.toolInfo[t.id].version ?? "?"),
                   state.toolInfo[t.id].path ? ` · ${state.toolInfo[t.id].path}` : ""),
@@ -799,6 +810,126 @@ listen("tools-done", ({ payload }) => {
   loadTools();
 });
 
+// ------------------------------------------------------- configuración inicial ----
+// Después del instalador de Windows: `cheka install` con una lista de pasos en vez de la
+// salida de la terminal. Los pasos se reconocen por los títulos "== … ==" que imprime.
+
+const SETUP_STEPS = [
+  ["Requisitos", "Requisitos de Windows"],
+  ["Archivos de cheka", "Archivos de cheka"],
+  ["PHP", "PHP"],
+  ["HTTPS", "Certificados para HTTPS"],
+  ["Apache", "Servidor web (Apache)"],
+  ["DNS", "Dominios *.test"],
+  ["Sitios", "Tus sitios"],
+  ["MariaDB", "Base de datos (MariaDB)"],
+  ["Verificación", "Verificación"],
+];
+state.setup = { running: false, current: -1, failed: false };
+
+function setupStepEls() {
+  return [...document.querySelectorAll("#setup-steps li")];
+}
+
+function setSetupStep(index, cls, note) {
+  const li = setupStepEls()[index];
+  if (!li) return;
+  // Un paso con advertencias se queda en "warn" aunque luego termine.
+  if (cls === "done" && li.classList.contains("warn")) cls = "warn";
+  li.className = cls;
+  if (note) li.querySelector(".note").textContent = ` — ${note}`;
+}
+
+function showSetup(info) {
+  const update = info.update;
+  $("#setup-title").textContent = update ? "Actualizar cheka" : "Bienvenido a cheka";
+  $("#setup-intro").textContent = update
+    ? `Instalaste la versión ${info.bundled_version}; tu equipo tiene configurada la ${info.installed_version}. Actualizar toma un momento y no toca tus proyectos.`
+    : "cheka va a preparar tu equipo: descarga PHP, Apache y MariaDB, configura los dominios *.test y HTTPS, " +
+      "y deja todo corriendo como servicio. Windows te pedirá permiso una sola vez. Tus proyectos van en la carpeta Sites de tu perfil.";
+  $("#setup-start").textContent = update ? "Actualizar" : "Configurar";
+  $("#setup-steps").replaceChildren(...SETUP_STEPS.map(([, label]) => h("li", {}, label, h("span", { class: "note" }))));
+  $("#setup-console").replaceChildren();
+  $("#setup").classList.remove("hidden");
+}
+
+async function checkSetup() {
+  try {
+    const info = await invoke("setup_state");
+    if (info.needed || info.update) showSetup(info);
+  } catch {
+    // Sin la información de instalación, el panel funciona como siempre.
+  }
+}
+
+$("#setup-start").addEventListener("click", async () => {
+  if (state.setup.done) {
+    $("#setup").classList.add("hidden");
+    reload();
+    return;
+  }
+  state.setup = { running: true, current: -1, failed: false, done: false };
+  for (let i = 0; i < SETUP_STEPS.length; i++) setSetupStep(i, "");
+  $("#setup-console").replaceChildren();
+  $("#setup-start").disabled = true;
+  $("#setup-start").textContent = "Configurando…";
+  $("#setup-details").classList.remove("hidden");
+  try {
+    await invoke("run_setup");
+  } catch (e) {
+    $("#setup-console").append(h("span", { class: "err" }, String(e) + "\n"));
+    setupFinished(false);
+  }
+});
+
+$("#setup-details").addEventListener("click", () => {
+  const el = $("#setup-console");
+  el.classList.toggle("hidden");
+  $("#setup-details").textContent = el.classList.contains("hidden") ? "Ver detalles" : "Ocultar detalles";
+});
+
+listen("setup-output", ({ payload }) => {
+  const consoleEl = $("#setup-console");
+  consoleEl.append(payload.error ? h("span", { class: "err" }, payload.line + "\n") : payload.line + "\n");
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+  const title = /^== (.+) ==$/.exec(payload.line.trim());
+  const s = state.setup;
+  if (title) {
+    const index = SETUP_STEPS.findIndex(([key]) => title[1].startsWith(key));
+    if (index >= 0) {
+      if (s.current >= 0) setSetupStep(s.current, "done");
+      s.current = index;
+      setSetupStep(index, "running");
+    }
+  } else if (s.current >= 0 && /^[!✘]/.test(payload.line.trim())) {
+    // Avisos y errores: se marcan en el paso y se muestra el texto.
+    const failed = payload.line.trim().startsWith("✘");
+    setSetupStep(s.current, failed ? "failed" : "warn", payload.line.trim().slice(1).trim());
+  } else if (s.current < 0 && payload.error && /cancel/i.test(payload.line)) {
+    $("#setup-intro").textContent = "Se canceló la solicitud de permisos. cheka necesita permisos de administrador una vez para configurar el equipo.";
+  }
+});
+
+function setupFinished(ok) {
+  const s = state.setup;
+  s.running = false;
+  $("#setup-start").disabled = false;
+  if (ok) {
+    if (s.current >= 0) setSetupStep(s.current, "done");
+    s.done = true;
+    $("#setup-title").textContent = "¡Listo!";
+    $("#setup-intro").textContent = "cheka quedó configurado. Crea o clona un proyecto en la carpeta Sites de tu perfil y ábrelo en http://<carpeta>.test";
+    $("#setup-start").textContent = "Empezar";
+  } else {
+    if (s.current >= 0) setSetupStep(s.current, "failed");
+    $("#setup-start").textContent = "Reintentar";
+    $("#setup-console").classList.remove("hidden");
+    $("#setup-details").textContent = "Ocultar detalles";
+  }
+}
+
+listen("setup-done", ({ payload }) => setupFinished(payload));
+
 // ------------------------------------------------------------------ navegación ----
 
 function showPage(page) {
@@ -819,9 +950,9 @@ $("#site-filter").addEventListener("input", renderSites);
 
 // Mantener los datos al día mientras la ventana está visible (el daemon publica solo).
 setInterval(() => {
-  if (document.visibilityState === "visible" && !state.creating) reload();
+  if (document.visibilityState === "visible" && !state.creating && !state.setup.running) reload();
 }, 4000);
 window.addEventListener("focus", reload);
 
 updateNewFormVisibility();
-reload();
+checkSetup().finally(reload);

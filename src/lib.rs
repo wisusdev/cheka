@@ -4,6 +4,7 @@
 pub mod commands;
 pub mod daemon;
 pub mod detect;
+pub mod dns;
 pub mod identity;
 #[cfg(unix)]
 pub mod install;

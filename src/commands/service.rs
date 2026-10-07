@@ -99,12 +99,17 @@ pub fn service(ctx: &Ctx, args: &[String]) -> Result<()> {
     known(id)?;
     if action == "logs" {
         let detail = report::services(ctx).into_iter().find(|s| s.id == id).unwrap();
-        let out = Command::new("journalctl")
-            .args(["-u", id, "-n", "150", "--no-pager", "-o", "short-iso"])
-            .env("LC_ALL", "C")
-            .stderr(Stdio::piped())
-            .output()?;
-        let journal: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect();
+        // Windows no tiene journal: todo está en los archivos de log.
+        let journal: Vec<String> = if cfg!(windows) {
+            Vec::new()
+        } else {
+            let out = Command::new("journalctl")
+                .args(["-u", id, "-n", "150", "--no-pager", "-o", "short-iso"])
+                .env("LC_ALL", "C")
+                .stderr(Stdio::piped())
+                .output()?;
+            String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
+        };
         let files = detail
             .log_files
             .iter()
@@ -130,7 +135,7 @@ pub fn service(ctx: &Ctx, args: &[String]) -> Result<()> {
         bail!("{usage}");
     }
     ctx.ensure_root()?;
-    let ok = Command::new("systemctl").args([action.as_str(), id]).status()?.success();
+    let ok = run_action(ctx, action, id);
     let what = match action.as_str() {
         "start" => "iniciado",
         "stop" => "detenido",
@@ -139,11 +144,28 @@ pub fn service(ctx: &Ctx, args: &[String]) -> Result<()> {
         _ => "no iniciará con el sistema",
     };
     if !ok {
-        bail!("systemctl {action} {id} falló (revisa: cheka service {id} logs)");
+        bail!("No pude hacer '{action}' en {id} (revisa: cheka service {id} logs)");
     }
     ui::ok(format!("{id}: {what}"));
     if id == "cheka" && action == "stop" {
-        ui::warn("Con el daemon detenido, las carpetas nuevas no se publican solas y la CLI pedirá sudo.");
+        let how = if cfg!(windows) { "permisos de administrador" } else { "sudo" };
+        ui::warn(format!("Con el daemon detenido, las carpetas nuevas no se publican solas y la CLI pedirá {how}."));
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn run_action(_ctx: &Ctx, action: &str, id: &str) -> bool {
+    Command::new("systemctl").args([action, id]).status().is_ok_and(|s| s.success())
+}
+
+/// Windows: iniciar/detener/reiniciar con PowerShell; activar/desactivar cambia el tipo de
+/// inicio (automático o manual) sin tocar si está corriendo.
+#[cfg(windows)]
+fn run_action(ctx: &Ctx, action: &str, id: &str) -> bool {
+    match action {
+        "enable" => ctx.sys.enable(id, false).is_ok(),
+        "disable" => ctx.sys.disable(id, false).is_ok(),
+        other => crate::commands::service_action(other, id),
+    }
 }

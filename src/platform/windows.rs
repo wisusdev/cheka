@@ -51,6 +51,64 @@ pub fn canonicalize(p: &Path) -> io::Result<PathBuf> {
     })
 }
 
+/// Zona horaria del sistema con nombre IANA ("America/El_Salvador"), que es lo que espera
+/// PHP. Windows usa nombres propios ("Central America Standard Time"); la conversión la hace
+/// el ICU que trae Windows 10/11 (la misma tabla de CLDR que usa todo el mundo).
+pub fn iana_timezone() -> Option<String> {
+    use windows_sys::Win32::Globalization::{U_ZERO_ERROR, ucal_getTimeZoneIDForWindowsID};
+    use windows_sys::Win32::System::Time::{
+        DYNAMIC_TIME_ZONE_INFORMATION, GetDynamicTimeZoneInformation, TIME_ZONE_ID_INVALID,
+    };
+    // SAFETY: estructura de datos simples; Windows la llena.
+    let mut info: DYNAMIC_TIME_ZONE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetDynamicTimeZoneInformation(&mut info) } == TIME_ZONE_ID_INVALID {
+        return None;
+    }
+    let key = &info.TimeZoneKeyName;
+    let len = key.iter().position(|&c| c == 0).unwrap_or(key.len());
+    if len == 0 {
+        return None;
+    }
+    // Con la región del usuario ("SV") ICU da la zona de ese país (America/El_Salvador) en
+    // vez de la genérica de la zona de Windows (America/Guatemala); sin región, la genérica.
+    let region = user_region();
+    for region in [region.as_deref(), None] {
+        let region_c = region.map(|r| format!("{r}\0"));
+        let region_ptr = region_c.as_ref().map_or(std::ptr::null(), |r| r.as_ptr());
+        let mut buf = [0u16; 128];
+        let mut status = U_ZERO_ERROR;
+        // SAFETY: `key` tiene `len` caracteres, `buf` la capacidad indicada y la región
+        // (si hay) termina en 0.
+        let n = unsafe {
+            ucal_getTimeZoneIDForWindowsID(
+                key.as_ptr(),
+                len as i32,
+                region_ptr,
+                buf.as_mut_ptr(),
+                buf.len() as i32,
+                &mut status,
+            )
+        };
+        if status <= U_ZERO_ERROR && n > 0 {
+            return String::from_utf16(&buf[..n as usize]).ok();
+        }
+    }
+    None
+}
+
+/// Región del usuario en Windows (código ISO de dos letras, p. ej. "SV").
+fn user_region() -> Option<String> {
+    use windows_sys::Win32::Globalization::GetUserDefaultGeoName;
+    let mut buf = [0u16; 16];
+    // SAFETY: búfer con la capacidad indicada.
+    let n = unsafe { GetUserDefaultGeoName(buf.as_mut_ptr(), buf.len() as i32) };
+    if n <= 1 {
+        return None;
+    }
+    let s = String::from_utf16(&buf[..(n - 1) as usize]).ok()?;
+    (s.len() == 2 && s.chars().all(|c| c.is_ascii_alphabetic())).then_some(s)
+}
+
 /// Los permisos Unix no existen en Windows.
 pub fn set_mode(_: &Path, _: u32) -> io::Result<()> {
     Ok(())
@@ -176,7 +234,7 @@ fn elevated_cmdline(exe: &Path, args: &[OsString], log: &Path) -> Result<String>
 
 /// `-EncodedCommand` de PowerShell: base64 del script en UTF-16LE. Evita que las comillas
 /// del script se pierdan al pasarlo como argumento.
-fn encode_powershell(script: &str) -> String {
+pub fn encode_powershell(script: &str) -> String {
     const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -328,6 +386,13 @@ pub fn open_url_command(url: &str) -> Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zona_horaria_iana() {
+        // Siempre hay una zona configurada; su nombre IANA lleva "/" (o es "UTC"/"Etc/…").
+        let tz = iana_timezone().expect("sin zona horaria");
+        assert!(tz.contains('/') || tz == "UTC", "{tz}");
+    }
 
     #[test]
     fn base64_de_powershell() {

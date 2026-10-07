@@ -39,6 +39,12 @@ pub const COMMON_SETTINGS: [&str; 11] = [
 /// Paquetes `phpX.Y-*` que no son extensiones.
 const NOT_EXTENSIONS: [&str; 8] = ["cli", "fpm", "cgi", "common", "dev", "phpdbg", "dbg", "embed"];
 
+/// ¿Se pueden activar, desactivar e instalar extensiones? (PHP de apt en Linux; siempre en
+/// Windows, con las DLL de `ext\` y las de PECL)
+pub fn can_manage_extensions(v: &str) -> bool {
+    cfg!(windows) || is_apt(v)
+}
+
 pub fn is_apt(v: &str) -> bool {
     is_executable(Path::new(&format!("/usr/sbin/php-fpm{v}")))
 }
@@ -136,7 +142,14 @@ fn system_extensions(v: &str) -> BTreeMap<String, (String, PathBuf)> {
     out
 }
 
+/// Windows: las DLL de `ext\` de esa versión.
+#[cfg(windows)]
+pub fn available_extensions(v: &str) -> BTreeSet<String> {
+    crate::windows_setup::available_extensions(&Layout::from_env(), v)
+}
+
 /// Extensiones que el sistema tiene instaladas (activas o no).
+#[cfg(unix)]
 pub fn available_extensions(v: &str) -> BTreeSet<String> {
     let mut set = BTreeSet::new();
     if let Ok(rd) = fs::read_dir(mods_available(v)) {
@@ -180,12 +193,24 @@ fn current_ext_links(dir: &Path) -> BTreeMap<String, PathBuf> {
     links
 }
 
+#[cfg(windows)]
+pub fn extension_enabled(v: &str, name: &str, overrides: &BTreeMap<String, bool>) -> bool {
+    crate::windows_setup::extension_enabled(&Layout::from_env(), v, name, overrides)
+}
+
+#[cfg(windows)]
+pub fn system_enables(v: &str, name: &str) -> bool {
+    crate::windows_setup::default_enabled(&Layout::from_env(), v, name)
+}
+
 /// ¿Activa esta extensión el PHP de cheka? (con los cambios del usuario aplicados)
+#[cfg(unix)]
 pub fn extension_enabled(v: &str, name: &str, overrides: &BTreeMap<String, bool>) -> bool {
     desired_ext_links(v, overrides).keys().any(|f| ext_name(f).as_deref() == Some(name))
 }
 
 /// ¿La activa el sistema por su cuenta? (sirve para no guardar cambios redundantes)
+#[cfg(unix)]
 pub fn system_enables(v: &str, name: &str) -> bool {
     system_extensions(v).contains_key(name)
 }
@@ -295,6 +320,18 @@ fn fpm_output(ctx: &Ctx, v: &str, flag: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// Extensiones que se pueden instalar: paquetes de apt o, en Windows, las sugeridas de PECL.
+#[cfg(windows)]
+fn installable(ctx: &Ctx, v: &str, _apt: bool) -> Vec<String> {
+    crate::windows_setup::pecl_installable(&ctx.layout, v)
+}
+
+#[cfg(unix)]
+fn installable(_ctx: &Ctx, v: &str, apt: bool) -> Vec<String> {
+    if apt { apt_installable(v) } else { Vec::new() }
+}
+
+#[cfg_attr(windows, allow(dead_code))]
 fn apt_installable(v: &str) -> Vec<String> {
     let names = |cmd: &mut Command| -> BTreeSet<String> {
         cmd.env("LC_ALL", "C")
@@ -359,7 +396,8 @@ pub fn detail(ctx: &Ctx, v: &str) -> Result<PhpDetail> {
 
     let st = ctx.state.php.get(v).cloned().unwrap_or_default();
     let apt = is_apt(v);
-    let extensions = if apt {
+    let manage = can_manage_extensions(v);
+    let extensions = if manage {
         available_extensions(v)
             .into_iter()
             .map(|name| ExtensionInfo {
@@ -396,9 +434,9 @@ pub fn detail(ctx: &Ctx, v: &str) -> Result<PhpDetail> {
         cli_bin: php::cli_bin(&ctx.layout, v).display().to_string(),
         ini_file,
         ini_files,
-        can_manage_extensions: apt,
+        can_manage_extensions: manage,
         extensions,
-        installable: if apt { apt_installable(v) } else { Vec::new() },
+        installable: installable(ctx, v, apt),
         settings,
     })
 }

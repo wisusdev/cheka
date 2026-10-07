@@ -210,12 +210,12 @@ pub fn services(ctx: &Ctx, action: &str) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn service_action(action: &str, unit: &str) -> bool {
+pub(crate) fn service_action(action: &str, unit: &str) -> bool {
     Command::new("systemctl").args([action, unit]).status().is_ok_and(|s| s.success())
 }
 
 #[cfg(windows)]
-fn service_action(action: &str, unit: &str) -> bool {
+pub(crate) fn service_action(action: &str, unit: &str) -> bool {
     let verb = match action {
         "start" => "Start",
         "stop" => "Stop",

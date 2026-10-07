@@ -192,6 +192,108 @@ pub fn download_php(ctx: &Ctx, v: &str) -> Result<String> {
     Ok(rel.full)
 }
 
+// ---------------------------------------------------------------- extensiones ----
+
+/// Extensiones que se cargan con `zend_extension` en vez de `extension`.
+const ZEND_EXTENSIONS: [&str; 2] = ["opcache", "xdebug"];
+pub const PECL_RELEASES: &str = "https://downloads.php.net/~windows/pecl/releases";
+/// Extensiones de PECL que ofrece `php:info` para instalar (todas publican DLL NTS x64
+/// para 8.0–8.5). Cualquier otra de PECL también se puede instalar por nombre.
+const PECL_SUGGESTED: [&str; 11] =
+    ["apcu", "igbinary", "imagick", "memcache", "mongodb", "msgpack", "pcov", "redis", "ssh2", "xdebug", "yaml"];
+
+fn ext_dir(layout: &Layout, v: &str) -> PathBuf {
+    php_dir(layout, v).join("ext")
+}
+
+/// Extensiones que trae (o a las que se agregó) esta versión: `ext\php_*.dll`.
+pub fn available_extensions(layout: &Layout, v: &str) -> std::collections::BTreeSet<String> {
+    fs::read_dir(ext_dir(layout, v))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().to_lowercase();
+            Some(n.strip_prefix("php_")?.strip_suffix(".dll")?.to_string())
+        })
+        .collect()
+}
+
+/// ¿La activa cheka por defecto? (el equivalente a lo que activa el paquete de apt)
+pub fn default_enabled(layout: &Layout, v: &str, name: &str) -> bool {
+    (DEFAULT_EXTENSIONS.contains(&name) || name == "opcache")
+        && ext_dir(layout, v).join(format!("php_{name}.dll")).is_file()
+}
+
+/// Activa con los cambios de `cheka.toml` aplicados.
+pub fn extension_enabled(layout: &Layout, v: &str, name: &str, overrides: &BTreeMap<String, bool>) -> bool {
+    ext_dir(layout, v).join(format!("php_{name}.dll")).is_file()
+        && overrides.get(name).copied().unwrap_or_else(|| default_enabled(layout, v, name))
+}
+
+/// Extensiones sugeridas de PECL que esta versión aún no tiene.
+pub fn pecl_installable(layout: &Layout, v: &str) -> Vec<String> {
+    let have = available_extensions(layout, v);
+    PECL_SUGGESTED.iter().filter(|e| !have.contains(**e)).map(|e| e.to_string()).collect()
+}
+
+/// `php:ext <v> install <ext>` en Windows: la DLL de PECL para esta versión de PHP (NTS
+/// x64), el equivalente a `apt install phpX.Y-<ext>`. Busca la versión estable más nueva
+/// que tenga compilación para esta versión de PHP. Devuelve la versión instalada.
+pub fn install_pecl(ctx: &Ctx, v: &str, name: &str) -> Result<String> {
+    let l = &ctx.layout;
+    ui::info(format!("Buscando {name} en PECL para PHP {v}…"));
+    let listing = fetch_text(&format!("{PECL_RELEASES}/{name}/"))
+        .map_err(|_| anyhow!("PECL no publica DLL de Windows para '{name}'"))?;
+    let mut versions: Vec<String> = Regex::new(r#"href="([0-9][0-9.]*)/""#)?
+        .captures_iter(&listing)
+        .map(|c| c[1].to_string())
+        .collect();
+    let key = |s: &String| s.split('.').map(|p| p.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>();
+    versions.sort_by_key(key);
+    let zip_re = |ver: &str| {
+        Regex::new(&format!(
+            r"php_{}-{}-{}-nts-v[sc]\d+-x64\.zip",
+            regex::escape(name),
+            regex::escape(ver),
+            regex::escape(v)
+        ))
+    };
+    let mut found = None;
+    for ver in versions.iter().rev().take(6) {
+        let dir = fetch_text(&format!("{PECL_RELEASES}/{name}/{ver}/")).unwrap_or_default();
+        if let Some(m) = zip_re(ver)?.find(&dir) {
+            found = Some((ver.clone(), m.as_str().to_string()));
+            break;
+        }
+    }
+    let (ver, file) = found.ok_or_else(|| anyhow!("No hay una DLL de {name} para PHP {v} (NTS x64) en PECL"))?;
+    let tmp = tempfile::tempdir()?;
+    let zip = tmp.path().join(&file);
+    ui::info(format!("Descargando {name} {ver}…"));
+    download(&format!("{PECL_RELEASES}/{name}/{ver}/{file}"), &zip)?;
+    let x = tmp.path().join("x");
+    unzip(&zip, &x)?;
+    let dll = x.join(format!("php_{name}.dll"));
+    if !dll.is_file() {
+        bail!("El zip de {name} no trae php_{name}.dll");
+    }
+    // La extensión va a ext\; las DLL que necesita (p. ej. las de ImageMagick), junto a
+    // php.exe, que es donde Windows las busca.
+    let dir = php_dir(l, v);
+    with_apache_stopped(ctx, || {
+        fs::copy(&dll, ext_dir(l, v).join(format!("php_{name}.dll")))?;
+        for e in fs::read_dir(&x)?.flatten() {
+            let n = e.file_name().to_string_lossy().to_lowercase();
+            if n.ends_with(".dll") && !n.starts_with("php_") {
+                fs::copy(e.path(), dir.join(e.file_name()))?;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(ver)
+}
+
 /// Certificados raíz para cURL y OpenSSL de PHP (Windows no expone los suyos a OpenSSL).
 pub fn cacert(layout: &Layout) -> PathBuf {
     layout.etc.join("cacert.pem")
@@ -218,16 +320,20 @@ pub fn write_php_ini(ctx: &Ctx, v: &str) -> Result<bool> {
     let l = &ctx.layout;
     let dir = php_dir(l, v);
     let ext_dir = dir.join("ext");
-    let has = |name: &str| ext_dir.join(format!("php_{name}.dll")).is_file();
-    let extensions: Vec<String> = DEFAULT_EXTENSIONS.iter().filter(|e| has(e)).map(|e| e.to_string()).collect();
+    // Lo que activa cheka por defecto, con los cambios de `cheka.toml` (`php:ext`). Desde
+    // PHP 8.5 OPcache viene incluido: no hay DLL y no se carga aparte.
+    let overrides = ctx.state.php.get(v).map(|s| s.extensions.clone()).unwrap_or_default();
+    let (zend, extensions): (Vec<String>, Vec<String>) = available_extensions(l, v)
+        .into_iter()
+        .filter(|e| extension_enabled(l, v, e, &overrides))
+        .partition(|e| ZEND_EXTENSIONS.contains(&e.as_str()));
     let mut text = render::windows_php_ini(
         l,
         &WindowsPhpIni {
             v,
             ext_dir: &ext_dir,
             extensions: &extensions,
-            // Desde PHP 8.5 OPcache viene incluido y no se carga aparte.
-            opcache: has("opcache"),
+            zend_extensions: &zend,
             cacert: &cacert(l),
             tz: &php::timezone(),
         },
@@ -317,19 +423,90 @@ pub fn install_mariadb(ctx: &Ctx) -> Result<()> {
          GRANT ALL PRIVILEGES ON *.* TO '{user}'@'127.0.0.1' WITH GRANT OPTION;\n\
          FLUSH PRIVILEGES;\n"
     );
-    let ok = Command::new(mariadb_bin("mariadb"))
-        .args(["-u", "root", "-h", "127.0.0.1", "-e", &sql])
-        .status()
-        .is_ok_and(|s| s.success());
-    if !ok {
+    // root sin contraseña por TCP: sin la opción, el cliente avisa que no verifica el
+    // certificado (no hay TLS que verificar en una conexión local).
+    let root_tcp = |sql: &str| {
+        Command::new(mariadb_bin("mariadb"))
+            .args(["--protocol=TCP", "--disable-ssl-verify-server-cert", "-u", "root", "-h", "127.0.0.1", "-e", sql])
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if !root_tcp(&sql) {
         bail!(
             "No pude crear el usuario '{user}' en MariaDB como root sin contraseña. Si tu root tiene \
              contraseña, créalo a mano:\n  mariadb -u root -p -e \"CREATE USER '{user}'@'localhost' IDENTIFIED BY '{pass}'; \
              GRANT ALL ON *.* TO '{user}'@'localhost' WITH GRANT OPTION;\""
         );
     }
-    ui::ok(format!("MariaDB listo; usuario '{user}'/'{pass}' para tus proyectos"));
+    ui::ok(format!("Usuario '{user}'/'{pass}' para tus proyectos"));
+
+    // Tu usuario de Windows sin contraseña, por named pipe: el equivalente al `unix_socket`
+    // de Linux. Así `mariadb` y `cheka db` entran como tú.
+    let me = &ctx.id.user;
+    if me.contains(['\'', '\\', '"']) {
+        bail!("Tu nombre de usuario de Windows tiene caracteres que MariaDB no admite aquí: {me}");
+    }
+    let ini = mariadb_ini();
+    let text = fs::read_to_string(&ini).with_context(|| format!("No pude leer {}", ini.display()))?;
+    let mut new = set_ini(&text, "mysqld", "named-pipe", "ON");
+    new = set_ini(&new, "client", "protocol", "PIPE");
+    new = set_ini(&new, "client", "user", me);
+    if new != text {
+        write(&ini, &new)?;
+        ui::info("Reiniciando MariaDB con named pipes…");
+        ctx.sys.restart(MARIADB_SERVICE)?;
+    }
+    // Cargar el plugin falla si ya está cargado: no importa.
+    let _ = Command::new(mariadb_bin("mariadb"))
+        .args(["--protocol=TCP", "--disable-ssl-verify-server-cert", "-u", "root", "-h", "127.0.0.1", "-e", "INSTALL SONAME 'auth_named_pipe'"])
+        .stderr(Stdio::null())
+        .status();
+    let ok = root_tcp(&format!(
+        "CREATE USER IF NOT EXISTS '{me}'@'localhost' IDENTIFIED VIA named_pipe;\n\
+         GRANT ALL PRIVILEGES ON *.* TO '{me}'@'localhost' WITH GRANT OPTION;\n\
+         FLUSH PRIVILEGES;\n"
+    ));
+    if !ok {
+        bail!("No pude crear tu usuario '{me}' en MariaDB (named pipe)");
+    }
+    ui::ok(format!("Usuario '{me}' sin contraseña (named pipe, como unix_socket en Linux): prueba 'mariadb'"));
     Ok(())
+}
+
+/// `my.ini` del servicio de MariaDB (`<instalación>\data\my.ini`). Los clientes también lo
+/// leen (sección `[client]`).
+pub fn mariadb_ini() -> PathBuf {
+    let bin = mariadb_bin("mariadb");
+    bin.parent().and_then(Path::parent).map(|d| d.join(r"data\my.ini")).unwrap_or_else(|| PathBuf::from("my.ini"))
+}
+
+/// Pone `key=value` en `[section]` de un archivo INI (reemplaza si ya está; crea la sección
+/// si falta). Conserva el resto del archivo tal cual.
+fn set_ini(text: &str, section: &str, key: &str, value: &str) -> String {
+    let nl = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+    let header = format!("[{section}]");
+    let same_key = |l: &str| {
+        let k = l.split('=').next().unwrap_or("").trim().replace('_', "-");
+        k.eq_ignore_ascii_case(&key.replace('_', "-"))
+    };
+    let start = lines.iter().position(|l| l.trim().eq_ignore_ascii_case(&header));
+    match start {
+        Some(s) => {
+            let end = lines[s + 1..].iter().position(|l| l.trim_start().starts_with('[')).map_or(lines.len(), |p| s + 1 + p);
+            match (s + 1..end).find(|&i| same_key(&lines[i])) {
+                Some(i) => lines[i] = format!("{key}={value}"),
+                None => lines.insert(end, format!("{key}={value}")),
+            }
+        }
+        None => {
+            lines.push(header);
+            lines.push(format!("{key}={value}"));
+        }
+    }
+    let mut out = lines.join(nl);
+    out.push_str(nl);
+    out
 }
 
 // -------------------------------------------------------------------- mkcert ----
@@ -433,6 +610,36 @@ pub fn user_sid(user: &str) -> Result<String> {
     Ok(sid)
 }
 
+// ----------------------------------------------------------------------- DNS ----
+
+const NRPT_COMMENT: &str = "cheka";
+
+/// Regla NRPT `.test → 127.0.0.1`: Windows pregunta solo esos nombres al DNS del daemon
+/// (equivale al `~test` de systemd-resolved en Linux). Idempotente.
+pub fn install_nrpt() -> Result<()> {
+    let tld = crate::layout::TLD;
+    let script = format!(
+        "Get-DnsClientNrptRule | Where-Object {{ $_.Comment -eq '{NRPT_COMMENT}' -or $_.Namespace -contains '.{tld}' }} | \
+         Remove-DnsClientNrptRule -Force; \
+         Add-DnsClientNrptRule -Namespace '.{tld}' -NameServers '127.0.0.1' -Comment '{NRPT_COMMENT}' | Out-Null; \
+         Clear-DnsClientCache"
+    );
+    let out = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output()?;
+    if !out.status.success() {
+        bail!("No pude crear la regla DNS para .{tld}: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    Ok(())
+}
+
+pub fn remove_nrpt() -> Result<()> {
+    let script = format!(
+        "Get-DnsClientNrptRule | Where-Object {{ $_.Comment -eq '{NRPT_COMMENT}' }} | Remove-DnsClientNrptRule -Force; \
+         Clear-DnsClientCache"
+    );
+    let _ = Command::new("powershell.exe").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output()?;
+    Ok(())
+}
+
 // --------------------------------------------------------------------- hosts ----
 
 const HOSTS_BEGIN: &str = "# >>> cheka (generado por cheka, no editar este bloque)";
@@ -454,10 +661,9 @@ fn hosts_without_block(text: &str) -> String {
     }
 }
 
-/// Windows no tiene un resolver por sufijo: cada sitio va al archivo `hosts` (sin
-/// comodines, así que los subsitios de Multisite necesitan `cheka link` propio).
-/// `cheka-check.test` sirve para que `cheka status` compruebe que funciona.
-/// Devuelve si cambió el archivo.
+/// Respaldo del DNS de cheka: cada sitio también va al archivo `hosts`, por si un navegador
+/// usa DNS cifrado (DoH) y no respeta la regla NRPT. Los subdominios (`*.sitio.test`) los
+/// resuelve el DNS del daemon. Devuelve si cambió el archivo.
 pub fn sync_hosts(l: &Layout, sites: &[String]) -> Result<bool> {
     let path = l.hosts_file();
     let current = match fs::read(&path) {
@@ -467,8 +673,7 @@ pub fn sync_hosts(l: &Layout, sites: &[String]) -> Result<bool> {
         Err(e) => return Err(e).with_context(|| format!("No pude leer {}", path.display())),
     };
     let mut text = hosts_without_block(&current);
-    let mut names: Vec<String> = sites.iter().map(|s| format!("{s}.{}", crate::layout::TLD)).collect();
-    names.insert(0, format!("cheka-check.{}", crate::layout::TLD));
+    let names: Vec<String> = sites.iter().map(|s| format!("{s}.{}", crate::layout::TLD)).collect();
     if !text.is_empty() {
         text.push_str("\r\n\r\n");
     }
@@ -671,6 +876,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn my_ini_cambia_solo_lo_necesario() {
+        let ini = "[mysqld]\r\ndatadir=C:/x\r\nport=3306\r\n[client]\r\nport=3306\r\n";
+        let a = set_ini(ini, "mysqld", "named-pipe", "ON");
+        let a = set_ini(&a, "client", "protocol", "PIPE");
+        let a = set_ini(&a, "client", "user", "Jesus");
+        assert_eq!(
+            a,
+            "[mysqld]\r\ndatadir=C:/x\r\nport=3306\r\nnamed-pipe=ON\r\n[client]\r\nport=3306\r\nprotocol=PIPE\r\nuser=Jesus\r\n"
+        );
+        // idempotente, y reconoce named_pipe con guion bajo
+        assert_eq!(set_ini(&a, "client", "user", "Jesus"), a);
+        assert_eq!(set_ini("[mysqld]\nnamed_pipe=OFF\n", "mysqld", "named-pipe", "ON"), "[mysqld]\nnamed-pipe=ON\n");
+        assert_eq!(set_ini("", "client", "user", "x"), "[client]\nuser=x\n");
+    }
+
+    #[test]
     fn hosts_solo_toca_su_bloque() {
         let tmp = tempfile::tempdir().unwrap();
         let l = Layout::with_prefix(tmp.path().display().to_string());
@@ -682,7 +903,7 @@ mod tests {
         assert!(sync_hosts(&l, &["blog".into(), "tienda".into()]).unwrap());
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.starts_with(original.trim_end()));
-        assert!(text.contains("127.0.0.1 cheka-check.test\r\n127.0.0.1 blog.test\r\n127.0.0.1 tienda.test\r\n"));
+        assert!(text.contains("no editar este bloque)\r\n127.0.0.1 blog.test\r\n127.0.0.1 tienda.test\r\n# <<< cheka"));
         // idempotente
         assert!(!sync_hosts(&l, &["blog".into(), "tienda".into()]).unwrap());
         // un sitio menos

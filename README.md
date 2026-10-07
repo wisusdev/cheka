@@ -1,31 +1,45 @@
 # cheka
 
-Entorno local de desarrollo PHP al estilo de **Laravel Valet**, para Ubuntu.
-Cada carpeta dentro de `~/Sites` se publica sola como `http://<carpeta>.test`, con la
-versión de PHP que elijas por proyecto, MariaDB y HTTPS local.
+Entorno local de desarrollo PHP al estilo de **Laravel Valet**, para **Ubuntu y Windows**.
+Cada carpeta dentro de `~/Sites` (`%USERPROFILE%\Sites` en Windows) se publica sola como
+`http://<carpeta>.test`, con la versión de PHP que elijas por proyecto, MariaDB y HTTPS local.
 
-- **Un solo binario en Rust**, sin Docker. Un daemon (`cheka.service`) publica solas las
-  carpetas nuevas y atiende a la CLI, así que el uso diario no pide contraseña.
-- Reutiliza lo que Ubuntu ya trae: **Apache** (los `.htaccess` funcionan tal cual), **MariaDB** y **systemd**.
+- **Un solo binario en Rust**, sin Docker. Un daemon (servicio de systemd o de Windows)
+  publica solas las carpetas nuevas y atiende a la CLI, así que el uso diario no pide contraseña.
+- **Apache** (los `.htaccess` funcionan tal cual), **PHP 8.0–8.5** por proyecto, **MariaDB**,
+  dominios `*.test` (subdominios incluidos) y **HTTPS** local con mkcert.
 - Proyectos soportados: WordPress (single y Multisite, por subdirectorios o subdominios), Laravel, CodeIgniter 3 y 4, Bedrock y PHP sin framework.
+- **Panel de escritorio** con icono en la bandeja (sitios, PHP, servicios, nuevo proyecto,
+  logs y herramientas). En Windows viene en el instalador.
 
-> Versión 0.2.0, probada en Ubuntu 26.04 con Apache 2.4.66, PHP 8.5 y MariaDB 11.8.
-> La versión original en bash (0.1.0) se conserva en `legacy/cheka.sh` como referencia para
-> las pruebas de paridad. Para la arquitectura interna y el plan para macOS y Windows,
-> consulta [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md).
->
-> **Windows (beta):** `cheka install` (pide permisos con UAC) descarga Apache Lounge con
-> `mod_fcgid`, PHP de windows.php.net y mkcert, instala MariaDB con winget y deja el daemon
-> como servicio: las carpetas de `%USERPROFILE%\Sites` se publican solas y cada sitio se
-> agrega al archivo `hosts`. Diferencias con Linux: sin comodines DNS (los subsitios de
-> Multisite por subdominio necesitan `cheka link`), `cheka db` usa el usuario de `[db]` y
-> `php:ext` aún no aplica. Detalles en el hito 3 de `docs/ARQUITECTURA.md` §8.6.
+> Versión 0.2.0. Probada en Ubuntu 26.04 (Apache 2.4.66, PHP 8.5, MariaDB 11.8) y en
+> Windows 11 Home (Apache Lounge 2.4.69, PHP 8.3–8.5, MariaDB 13.0). Los dos sistemas tienen
+> los mismos comandos; cómo se resuelve cada pieza en Windows está en el hito 3 de
+> [`docs/ARQUITECTURA.md`](docs/ARQUITECTURA.md) §8.6. La versión original en bash (0.1.0)
+> se conserva en `legacy/cheka.sh` como referencia para las pruebas de paridad.
 
 ---
 
 ## Instalación
 
-Necesitas Rust ([rustup](https://rustup.rs)) para compilar:
+### Windows 10/11
+
+1. Descarga `cheka-vX.Y.Z-windows-x64-setup.exe` de la [última versión](https://github.com/wisusdev/cheka/releases/latest) y ejecútalo.
+2. Abre **cheka** desde el menú Inicio y pulsa **Configurar**: descarga PHP, Apache y
+   MariaDB, configura `*.test` y HTTPS y deja todo como servicio. Windows pide permiso una
+   sola vez.
+3. Crea o clona un proyecto en `%USERPROFILE%\Sites` y ábrelo en `http://<carpeta>.test`.
+
+Para actualizar, ejecuta el instalador de la versión nueva. Para desinstalar, usa
+*Configuración → Aplicaciones*: quita los servicios, la regla DNS y la entrada del PATH, y
+conserva tus proyectos y tus bases de datos.
+
+También sirve desde la terminal: `cheka.exe install` (lo que hace el botón **Configurar**).
+
+### Ubuntu
+
+Necesitas Rust ([rustup](https://rustup.rs)) para compilar (o usa el binario
+`cheka-vX.Y.Z-linux-x86_64.tar.gz` de la [última versión](https://github.com/wisusdev/cheka/releases/latest)):
 
 ```bash
 cd ~/cheka
@@ -246,9 +260,14 @@ sobrescribe.
 ## Limitaciones conocidas
 
 - **PHP 7.4 no está disponible.** El PPA de ondrej no tiene paquetes para Ubuntu 26.04 y
-  static-php-cli empieza en 8.0.
+  static-php-cli empieza en 8.0 (en Windows, cheka ofrece las mismas versiones: 8.0–8.5).
 - **"DNS seguro" del navegador:** con un proveedor personalizado en Chrome o Brave, `.test`
-  no resuelve. Déjalo en "automático" o desactívalo.
+  no resuelve. Déjalo en "automático" o desactívalo. En Windows los sitios también están en el
+  archivo `hosts`, así que el nombre principal funciona igual; los subdominios no.
+- **Windows: puerto 80, 443, 3306 o 53 ocupado.** Laragon, XAMPP, IIS o Skype usan los mismos
+  puertos: detenlos antes de configurar cheka (`cheka status` y `cheka services` lo muestran).
+- **Windows: Redis** es Memurai Developer (compatible con Redis): Redis no publica versión
+  para Windows.
 - **`/tmp`:** Apache usa un `/tmp` privado (`PrivateTmp`), así que los sitios en `/tmp` dan
   error 403. Pon tus proyectos en tu home.
 - **Subsitios de Multisite:** los creados después con `cheka wp site create` se registran con
@@ -270,14 +289,31 @@ sobrescribe.
 | Errores de PHP | `cheka log` |
 | Apache no recarga | `sudo apache2ctl -t`. cheka valida antes de recargar y, si algo falla, restaura la configuración anterior. |
 
+En Windows:
+
+| Síntoma | Revisa |
+|---|---|
+| `cheka` no se reconoce en la terminal | Abre una terminal nueva (las abiertas antes de instalar no ven el PATH) |
+| `x.test` no abre | `cheka status`, `Resolve-DnsName x.test` y la regla `Get-DnsClientNrptRule` |
+| Cambios que no aparecen | `cheka refresh` y el log del daemon: `C:\ProgramData\cheka\logs\cheka-daemon.log` |
+| Un servicio no arranca | `cheka services` y `cheka service <nombre> logs` (cheka-apache, MariaDB, cheka) |
+| Apache no recarga | `C:\ProgramData\cheka\apache\bin\httpd.exe -t` |
+| La configuración inicial falla | En la ventana de cheka, **Ver detalles**; luego **Reintentar** (es idempotente) |
+
 ---
 
 ## Panel y bandeja (UI)
 
 `ui/` contiene un panel de escritorio (Tauri) al estilo de PHP Monitor: sitios, versiones de
-PHP, servicios, nuevo proyecto y logs, más un icono en la bandeja con acceso a cada sitio.
-Usa el `cheka` instalado como motor, así que hace exactamente lo mismo que la terminal; las
-acciones de root muestran el diálogo de contraseña del sistema (`pkexec`).
+PHP, servicios, nuevo proyecto, logs y herramientas, más un icono en la bandeja con acceso a
+cada sitio. Usa el `cheka` instalado como motor, así que hace exactamente lo mismo que la
+terminal; las acciones de root muestran el diálogo de contraseña del sistema (`pkexec`) o, en
+Windows, la ventana de UAC.
+
+**Windows:** viene en el instalador (menú Inicio → cheka). La primera vez muestra la
+configuración guiada; después de instalar una versión nueva ofrece actualizar.
+
+**Ubuntu:**
 
 ```bash
 sudo apt install libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev
@@ -301,8 +337,14 @@ cargo clippy --all-targets
   proyecto de prueba y compara la salida y los archivos generados byte a byte, y el estado
   por contenido. Con `PARITY_SHOW=1 cargo test --test parity -- --nocapture` se ve la salida
   de cada paso.
-- **API del daemon:** socket Unix en `/run/cheka/cheka.sock`, con un JSON por línea
-  (`{"cmd":"ping"}`, `{"cmd":"refresh"}`). Será la base de la UI de bandeja.
+- **API del daemon:** socket Unix en `/run/cheka/cheka.sock` (named pipe `\\.\pipe\cheka` en
+  Windows), con un JSON por línea (`{"cmd":"ping"}`, `{"cmd":"refresh"}`).
+- **CI:** cada PR corre clippy y `cargo test` en Ubuntu y Windows (`.github/workflows/ci.yml`).
+- **Instalador de Windows (local):** `cd ui && npx @tauri-apps/cli@2 build` deja
+  `target/release/bundle/nsis/cheka_X.Y.Z_x64-setup.exe` (con la UI y `cheka.exe`).
+- **Publicar una versión:** `git tag v0.3.0 && git push origin v0.3.0`. GitHub Actions
+  (`.github/workflows/release.yml`) toma la versión del tag, genera el instalador de
+  Windows, `cheka.exe` suelto y el binario de Linux, y los publica en *Releases* con sus sha256.
 
 ## Pruebas
 

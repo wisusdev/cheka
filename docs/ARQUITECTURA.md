@@ -9,6 +9,9 @@ igual que el script actual.
 
 > Las afirmaciones sobre macOS y Windows marcadas con **(verificar)** no se probaron. Lo marcado
 > con **(verificado)** se comprobó al escribir este documento (octubre de 2026).
+>
+> **Estado:** las fases 1 (Linux en Rust) y 3 (Windows, con paridad 1:1) están terminadas; la
+> 2 (macOS) sigue pendiente. El avance de cada hito está en §8.6.
 
 ---
 
@@ -557,7 +560,45 @@ password = "secret"
      muestra la salida en la misma terminal. Probado en modo prefijo: API por la pipe, carpeta
      nueva publicada sola, `link` sin permisos, `hosts`, `secure` con HTTPS válido (sitio y
      subdominio) e identidad del usuario vista desde SYSTEM.
-4. **UI de bandeja (estilo PHP Monitor)** — en curso, crate `ui/` (`cheka-ui`, Tauri v2,
+   - **3.4 ✅ Paridad con Linux** (lo que en 3.3 quedó distinto):
+     - *DNS con comodines:* `dns.rs`, un DNS mínimo en el daemon (127.0.0.1:53) que responde
+       `*.test`, más una regla NRPT `.test → 127.0.0.1` (el `~test` de systemd-resolved).
+       Funciona en Windows 11 Home **(verificado)**. El archivo `hosts` queda solo como
+       respaldo para navegadores con DNS cifrado; `cheka-check.test` ya no va ahí, así que
+       `status` comprueba el DNS de verdad.
+     - *`php:ext`:* disponibles = `ext\php_*.dll`; activar/desactivar se guarda en
+       `cheka.toml` como en Linux; `install` baja la DLL de PECL (`downloads.php.net/~windows/
+       pecl`) para la versión de PHP, y sus DLL dependientes van junto a `php.exe`.
+     - *`date.timezone`:* la zona de Windows convertida a IANA con el ICU del sistema
+       (`ucal_getTimeZoneIDForWindowsID`) y la región del usuario.
+     - *MariaDB sin contraseña:* el plugin `named_pipe` autentica con el usuario de Windows
+       (el `unix_socket` de Linux); `install` activa la pipe y pone `protocol=PIPE` y el
+       usuario en el `[client]` del `my.ini`, así que `mariadb` y `cheka db` entran como tú.
+       `.sql.gz` con `flate2`.
+     - *`cheka tools`:* `tools/windows.toml` con los mismos ids, nombres, categorías y
+       requisitos que `linux.toml`, en PowerShell con winget. Redis es Memurai (compatible).
+     - *`services`/`service`:* estado, PID, memoria, versión, puertos y logs con `sc`,
+       PowerShell y `netstat`; Windows no tiene journal (los logs son archivos).
+     - *UI:* el mismo panel; las acciones de administrador piden UAC (las pide `cheka`) en
+       vez de `pkexec`, sin ventanas de consola, con `icon.ico`.
+   - **3.5 ✅ Instalador y publicación.**
+     - *Instalador:* NSIS generado por Tauri (`ui/tauri.windows.conf.json`): la UI
+       (`cheka-ui.exe`, `mainBinaryName` para no chocar con la CLI) y `cheka.exe` en Archivos
+       de programa, para todos los usuarios, en español. `ui/windows/hooks.nsh`: al actualizar
+       (si existe `etc\user`) corre `cheka install` con la versión nueva; al desinstalar,
+       `cheka uninstall` (proyectos, MariaDB y `%ProgramData%\cheka` se conservan).
+     - **Decisión:** el instalador **no** configura el sistema. Corre elevado y no sabría quién
+       es el dueño de los proyectos; al terminar abre la UI como el usuario (`RunAsUser`), que
+       muestra la configuración guiada (`setup_state`/`run_setup`): `cheka install` con UAC
+       una sola vez y una lista de pasos que se arma con los títulos `== … ==` de su salida.
+       En las actualizaciones el dueño ya está en `etc\user`, así que el hook sí puede.
+     - *CI* (`.github/workflows/ci.yml`): clippy y `cargo test` en Ubuntu (incluye la paridad
+       con `legacy/cheka.sh`) y Windows en cada PR.
+     - *Versiones* (`release.yml`): un tag `vX.Y.Z` publica en GitHub Releases el instalador,
+       `cheka.exe` suelto y el binario de Linux (compilado en Ubuntu 22.04 por la glibc), con
+       `SHA256SUMS.txt`. La versión sale del tag: el flujo la escribe en `Cargo.toml` y
+       `tauri.conf.json` antes de compilar.
+4. **UI de bandeja (estilo PHP Monitor)** — Linux y Windows, crate `ui/` (`cheka-ui`, Tauri v2,
    interfaz en HTML/CSS/JS sin frameworks). Ventana con sitios (abrir, HTTPS, versión de PHP,
    carpeta, logs, enlazar carpetas), versiones de PHP, servicios, asistente de `new` con la
    salida en vivo y logs; bandeja con acceso a cada sitio y a reiniciar servicios.

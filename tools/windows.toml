@@ -1,0 +1,356 @@
+# Catálogo de herramientas de `cheka tools` (Windows). Mismos ids, nombres y categorías que
+# tools/linux.toml, para que la CLI y la UI funcionen igual en los dos sistemas.
+#
+# Cada herramienta tiene:
+#   detect   expresión de PowerShell que es verdadera si ya está instalada
+#   version  expresión que devuelve la versión (la primera línea vale)
+#   path     expresión que devuelve dónde está instalada
+#   root     pasos como administrador (cheka los ejecuta con una sola ventana de UAC)
+#   user     pasos como el usuario (instaladores por usuario, PATH y variables)
+#
+# Los pasos son PowerShell con $ErrorActionPreference = 'Stop', en una carpeta temporal.
+# Disponibles (equivalen a los de bash en Linux):
+#   winget_install Id…       winget install sin preguntas (como apt_install)
+#   add_path ruta            agrega la ruta al PATH del usuario (como ~/.bashrc)
+#   add_env NOMBRE valor     define una variable del usuario
+#   has comando              ¿está el comando en el PATH?
+#   app 'Nombre*'            el programa instalado (registro de Windows): .DisplayVersion…
+#   app_dir 'Nombre*'        su carpeta de instalación
+#   must { comando }         ejecuta un programa y falla si su código de salida no es 0
+#   ver                      (en version) extrae el primer número de versión: `x --version | ver`
+#   bindir programa          (en path) carpeta del ejecutable
+#   $env:CHEKA_USER, $env:CHEKA_HOME, $env:CHEKA_EXE   el usuario dueño, su perfil y cheka
+#   {{ db_user }}, {{ db_password }}  credenciales de [db] en cheka.toml
+#
+# PHP, Apache y MariaDB no están aquí: los gestiona cheka (`cheka install`).
+
+[[tool]]
+id = "sistema"
+name = "Actualizar el sistema"
+category = "Sistema"
+description = "winget upgrade de todo, y utilidades base (Git, 7-Zip)"
+detect = "$false"
+root = '''
+winget upgrade --all --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+winget_install Git.Git 7zip.7zip
+'''
+
+# ------------------------------------------------------------------ navegadores
+
+[[tool]]
+id = "chrome"
+name = "Google Chrome"
+category = "Navegadores"
+detect = "app 'Google Chrome'"
+version = "(app 'Google Chrome').DisplayVersion"
+path = "app_dir 'Google Chrome'"
+root = "winget_install Google.Chrome"
+
+[[tool]]
+id = "brave"
+name = "Brave"
+category = "Navegadores"
+detect = "app 'Brave'"
+version = "(app 'Brave').DisplayVersion"
+path = "app_dir 'Brave'"
+root = "winget_install Brave.Brave"
+
+[[tool]]
+id = "edge"
+name = "Microsoft Edge"
+category = "Navegadores"
+detect = "app 'Microsoft Edge'"
+version = "(app 'Microsoft Edge').DisplayVersion"
+path = "app_dir 'Microsoft Edge'"
+root = "winget_install Microsoft.Edge"
+
+# ------------------------------------------------------------------ editores y desarrollo
+
+[[tool]]
+id = "vscode"
+name = "Visual Studio Code"
+category = "Editores y desarrollo"
+detect = "app 'Microsoft Visual Studio Code*'"
+version = "(app 'Microsoft Visual Studio Code*').DisplayVersion"
+path = "app_dir 'Microsoft Visual Studio Code*'"
+user = "winget_install Microsoft.VisualStudioCode"
+
+[[tool]]
+id = "sublime"
+name = "Sublime Text"
+category = "Editores y desarrollo"
+detect = "app 'Sublime Text*'"
+# "Sublime Text Build 4200": la versión es el número de build
+version = '''(& "$(app_dir 'Sublime Text*')\subl.exe" --version) -replace '\D', '' '''
+path = "app_dir 'Sublime Text*'"
+root = "winget_install SublimeHQ.SublimeText.4"
+# `subl` en la terminal, como en Linux
+user = "add_path (app_dir 'Sublime Text*')"
+
+[[tool]]
+id = "zed"
+name = "Zed"
+category = "Editores y desarrollo"
+description = "Editor de código rápido, escrito en Rust. Se instala en tu perfil"
+detect = "app 'Zed'"
+version = "(app 'Zed').DisplayVersion"
+path = "app_dir 'Zed'"
+user = "winget_install ZedIndustries.Zed"
+
+[[tool]]
+id = "postman"
+name = "Postman"
+category = "Editores y desarrollo"
+detect = "app 'Postman*'"
+version = "(app 'Postman*').DisplayVersion"
+path = "app_dir 'Postman*'"
+user = "winget_install Postman.Postman"
+
+[[tool]]
+id = "github-desktop"
+name = "GitHub Desktop"
+category = "Editores y desarrollo"
+detect = "app 'GitHub Desktop'"
+version = "(app 'GitHub Desktop').DisplayVersion"
+path = "app_dir 'GitHub Desktop'"
+user = "winget_install GitHub.GitHubDesktop"
+
+[[tool]]
+id = "terminator"
+name = "Windows Terminal"
+category = "Editores y desarrollo"
+description = "Terminal con pestañas y paneles (el equivalente de Terminator)"
+detect = "Get-AppxPackage Microsoft.WindowsTerminal"
+version = "(Get-AppxPackage Microsoft.WindowsTerminal).Version"
+path = "(Get-AppxPackage Microsoft.WindowsTerminal).InstallLocation"
+user = "winget_install Microsoft.WindowsTerminal"
+
+[[tool]]
+id = "dbgate"
+name = "DbGate"
+category = "Editores y desarrollo"
+description = "Cliente de bases de datos (MariaDB, PostgreSQL, MongoDB…)"
+detect = "app 'DbGate*'"
+version = "(app 'DbGate*').DisplayVersion"
+path = "app_dir 'DbGate*'"
+root = "winget_install JanProchazka.dbgate"
+
+# ------------------------------------------------------------------ PHP (complementos)
+
+[[tool]]
+id = "composer"
+name = "Composer"
+category = "PHP"
+description = "Gestor de dependencias de PHP (lo usa `cheka new`)"
+detect = "has composer"
+version = "composer --version | ver"
+path = "(Get-Command composer).Source"
+# Como en Linux: el instalador oficial, verificado con su firma sha384, deja composer.phar
+# junto a cheka.exe; composer.bat lo ejecuta con el PHP del sitio actual (`cheka php`).
+root = '''
+$bin = Split-Path $env:CHEKA_EXE
+$expected = (Invoke-WebRequest -UseBasicParsing https://composer.github.io/installer.sig).Content.Trim()
+Invoke-WebRequest -UseBasicParsing https://getcomposer.org/installer -OutFile composer-setup.php
+$actual = (Get-FileHash -Algorithm SHA384 composer-setup.php).Hash.ToLower()
+if ($expected -ne $actual) { throw "Checksum de Composer incorrecto" }
+must { & $env:CHEKA_EXE php composer-setup.php --quiet --install-dir="$bin" --filename=composer.phar }
+Set-Content -Encoding ASCII -Path (Join-Path $bin 'composer.bat') -Value '@"%~dp0cheka.exe" php "%~dp0composer.phar" %*'
+'''
+
+[[tool]]
+id = "laravel"
+name = "Laravel installer"
+category = "PHP"
+requires = ["composer"]
+detect = 'Test-Path "$env:APPDATA\Composer\vendor\bin\laravel.bat"'
+version = '& "$env:APPDATA\Composer\vendor\bin\laravel.bat" --version | ver'
+path = '"$env:APPDATA\Composer\vendor\laravel\installer"'
+user = '''
+must { composer global require laravel/installer }
+add_path '%APPDATA%\Composer\vendor\bin'
+'''
+
+# ------------------------------------------------------------------ lenguajes
+
+[[tool]]
+id = "rust"
+name = "Rust (rustup)"
+category = "Lenguajes"
+description = "Compilador, cargo y clippy en %USERPROFILE%\\.cargo (necesita las Build Tools de Visual Studio)"
+detect = 'Test-Path "$env:USERPROFILE\.cargo\bin\rustc.exe"'
+version = '& "$env:USERPROFILE\.cargo\bin\rustc.exe" --version | ver'
+path = '"$env:USERPROFILE\.cargo"'
+user = '''
+winget_install Rustlang.Rustup
+must { & "$env:USERPROFILE\.cargo\bin\rustup.exe" default stable }
+add_path '%USERPROFILE%\.cargo\bin'
+'''
+
+[[tool]]
+id = "node"
+name = "Node.js (nvm) + Angular, Nest y Yarn"
+category = "Lenguajes"
+detect = "has nvm"
+version = "node --version | ver"
+path = "$env:NVM_HOME"
+# nvm-windows cambia de versión con un enlace en Program Files: necesita administrador.
+root = '''
+winget_install CoreyButler.NVMforWindows
+must { nvm install lts }
+must { nvm use lts }
+refresh_path
+must { npm install -g @angular/cli @nestjs/cli }
+must { corepack enable }
+must { corepack prepare yarn@stable --activate }
+'''
+
+[[tool]]
+id = "go"
+name = "Go"
+category = "Lenguajes"
+detect = "has go"
+version = "go version | ver"
+path = "Split-Path (bindir go)"
+root = "winget_install GoLang.Go"
+user = "add_path '%USERPROFILE%\\go\\bin'"
+
+[[tool]]
+id = "ruby"
+name = "Ruby"
+category = "Lenguajes"
+detect = "has ruby"
+version = "ruby --version | ver"
+path = "Split-Path (bindir ruby)"
+root = "winget_install RubyInstallerTeam.RubyWithDevKit.3.4"
+
+[[tool]]
+id = "dotnet"
+name = ".NET SDK 10"
+category = "Lenguajes"
+detect = "has dotnet"
+version = "dotnet --version"
+path = "bindir dotnet"
+root = "winget_install Microsoft.DotNet.SDK.10"
+
+[[tool]]
+id = "java"
+name = "Java (Oracle JDK 25)"
+category = "Lenguajes"
+detect = "has java"
+version = "(java -version 2>&1 | Out-String) | ver"
+# `java` en el PATH suele ser el acceso de Oracle (javapath): la carpeta real es java.home
+path = '''(java -XshowSettings:properties -version 2>&1 | Out-String) -split "`n" | Where-Object { $_ -match 'java\.home' } | ForEach-Object { ($_ -split '=', 2)[1].Trim() }'''
+root = "winget_install Oracle.JDK.25"
+
+# ------------------------------------------------------------------ móvil
+
+[[tool]]
+id = "flutter"
+name = "Flutter"
+category = "Móvil"
+detect = 'Test-Path "$env:LOCALAPPDATA\flutter\bin\flutter.bat"'
+version = '(Get-Content "$env:LOCALAPPDATA\flutter\bin\cache\flutter.version.json" | ConvertFrom-Json).frameworkVersion'
+path = '"$env:LOCALAPPDATA\flutter"'
+# Como en Linux: la versión estable del índice oficial. Flutter necesita Git.
+user = '''
+winget_install Git.Git
+$base = 'https://storage.googleapis.com/flutter_infra_release/releases'
+$index = Invoke-RestMethod "$base/releases_windows.json"
+$stable = $index.current_release.stable
+$archive = ($index.releases | Where-Object { $_.hash -eq $stable } | Select-Object -First 1).archive
+Invoke-WebRequest -UseBasicParsing "$base/$archive" -OutFile flutter.zip
+if (Test-Path "$env:LOCALAPPDATA\flutter") { Remove-Item -Recurse -Force "$env:LOCALAPPDATA\flutter" }
+must { tar.exe -xf flutter.zip -C "$env:LOCALAPPDATA" }
+add_env FLUTTER_HOME '%LOCALAPPDATA%\flutter'
+add_path '%LOCALAPPDATA%\flutter\bin'
+'''
+
+[[tool]]
+id = "android-studio"
+name = "Android Studio"
+category = "Móvil"
+description = "El SDK queda en %LOCALAPPDATA%\\Android\\Sdk"
+detect = "app 'Android Studio*'"
+version = "(app 'Android Studio*').DisplayVersion"
+path = "app_dir 'Android Studio*'"
+root = "winget_install Google.AndroidStudio"
+user = '''
+add_env ANDROID_HOME '%LOCALAPPDATA%\Android\Sdk'
+add_path '%LOCALAPPDATA%\Android\Sdk\cmdline-tools\latest\bin'
+add_path '%LOCALAPPDATA%\Android\Sdk\platform-tools'
+'''
+
+# ------------------------------------------------------------------ bases de datos y servicios
+
+[[tool]]
+id = "postgres-redis"
+name = "PostgreSQL + Redis"
+category = "Bases de datos y servicios"
+description = "Crea el usuario de [db] de cheka.toml como superusuario. Redis es Memurai (compatible con Redis)"
+detect = '(Test-Path "$env:ProgramFiles\PostgreSQL\17\bin\psql.exe") -and (Get-Service Memurai -ErrorAction SilentlyContinue)'
+version = '''"PostgreSQL $(& "$env:ProgramFiles\PostgreSQL\17\bin\psql.exe" --version | ver) · Memurai $((app 'Memurai*').DisplayVersion)"'''
+path = '"$env:ProgramFiles\PostgreSQL\17"'
+root = '''
+if (-not (Test-Path "$env:ProgramFiles\PostgreSQL\17\bin\psql.exe")) {
+  # El instalador de EDB necesita la contraseña de postgres: la de [db].
+  winget install -e --id PostgreSQL.PostgreSQL.17 --silent --accept-source-agreements --accept-package-agreements --disable-interactivity `
+    --override '--mode unattended --unattendedmodeui none --superpassword "{{ db_password }}" --servicename postgresql --serverport 5432'
+  if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335189) { throw "winget install PostgreSQL falló ($LASTEXITCODE)" }
+}
+winget_install Memurai.MemuraiDeveloper
+$env:PGPASSWORD = '{{ db_password }}'
+$sql = @'
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{{ db_user }}') THEN
+    CREATE ROLE "{{ db_user }}" WITH LOGIN SUPERUSER PASSWORD '{{ db_password }}';
+  ELSE
+    ALTER ROLE "{{ db_user }}" WITH LOGIN SUPERUSER PASSWORD '{{ db_password }}';
+  END IF;
+END $$;
+SELECT 'CREATE DATABASE "{{ db_user }}" OWNER "{{ db_user }}"'
+  WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{ db_user }}')\gexec
+'@
+must { $sql | & "$env:ProgramFiles\PostgreSQL\17\bin\psql.exe" -U postgres -h 127.0.0.1 -v ON_ERROR_STOP=1 }
+'''
+user = "add_path '%ProgramFiles%\\PostgreSQL\\17\\bin'"
+
+[[tool]]
+id = "mongodb"
+name = "MongoDB"
+category = "Bases de datos y servicios"
+description = "Servidor (servicio MongoDB) y mongosh"
+detect = "Get-Service MongoDB -ErrorAction SilentlyContinue"
+version = "(app 'MongoDB*').DisplayVersion"
+path = "app_dir 'MongoDB*'"
+root = "winget_install MongoDB.Server MongoDB.Shell"
+
+[[tool]]
+id = "ollama"
+name = "Ollama"
+category = "Bases de datos y servicios"
+description = "Modelos de IA locales"
+detect = "has ollama"
+version = "ollama --version 2>$null | ver"
+path = "(Get-Command ollama).Source"
+user = "winget_install Ollama.Ollama"
+
+# ------------------------------------------------------------------ multimedia
+
+[[tool]]
+id = "multimedia"
+name = "GIMP y ffmpeg"
+category = "Multimedia"
+detect = "(app 'GIMP*') -and (has ffmpeg)"
+version = '''"GIMP $((app 'GIMP*').DisplayVersion | ver) · ffmpeg $(ffmpeg -version | ver)"'''
+path = "app_dir 'GIMP*'"
+root = "winget_install GIMP.GIMP.3 Gyan.FFmpeg"
+
+[[tool]]
+id = "spotify"
+name = "Spotify"
+category = "Multimedia"
+detect = "app 'Spotify'"
+version = "(app 'Spotify').DisplayVersion"
+path = "app_dir 'Spotify'"
+# El instalador de Spotify se niega a correr como administrador.
+user = "winget_install Spotify.Spotify"

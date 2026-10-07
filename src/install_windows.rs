@@ -134,8 +134,14 @@ pub fn install(ctx: &mut Ctx) -> anyhow::Result<()> {
         ctx.state.paths = vec![sites_dir.display().to_string()];
     }
     ctx.state.save(&ctx.id)?;
-    if !test && ensure_in_path(&l.bin)? {
-        ui::ok(format!("{} agregado al PATH (abre una terminal nueva para usar 'cheka')", l.bin.display()));
+    if !test {
+        if ensure_in_path(&l.bin)? {
+            ui::ok(format!("{} agregado al PATH", l.bin.display()));
+        }
+        // Las terminales ya abiertas no ven el PATH nuevo.
+        if crate::util::which("cheka").is_none() {
+            ui::warn("Abre una terminal nueva para usar 'cheka' (esta no ve el PATH actualizado)");
+        }
     }
     ui::ok(format!("cheka en {}", target.display()));
 
@@ -157,10 +163,17 @@ pub fn install(ctx: &mut Ctx) -> anyhow::Result<()> {
     windows_setup::install_apache(ctx)?;
     ui::ok(format!("Apache listo como servicio {APACHE_SERVICE}"));
 
-    step("Sitios y DNS");
+    step(&format!("DNS para *.{TLD}"));
+    if test {
+        ui::info("Omitido en modo prueba");
+    } else {
+        windows_setup::install_nrpt()?;
+        ui::ok(format!("Regla NRPT: *.{TLD} → DNS de cheka en 127.0.0.1:53 (más el archivo hosts de respaldo)"));
+    }
+
+    step("Sitios");
     ctx.reload_state()?;
     refresh::run(ctx)?;
-    ui::ok(format!("Cada sitio se agrega solo a {}", l.hosts_file().display()));
     if !test {
         windows_setup::register_daemon(&target)?;
         ctx.sys.enable(crate::daemon::SERVICE_NAME, true)?;
@@ -170,20 +183,47 @@ pub fn install(ctx: &mut Ctx) -> anyhow::Result<()> {
     step("MariaDB");
     if test {
         ui::info("Omitido en modo prueba");
-    } else if let Err(e) = windows_setup::install_mariadb(ctx) {
-        // No es motivo para dejar a medias lo demás: se puede repetir `cheka install`.
-        ui::warn(format!("{e:#}"));
-        ui::warn("¿Otro MySQL/MariaDB (Laragon, XAMPP) usa el puerto 3306? Detenlo y repite 'cheka install'");
+    } else {
+        match windows_setup::install_mariadb(ctx) {
+            Ok(()) => {
+                // Como en Linux, `mariadb` y `mariadb-dump` quedan a mano en la terminal.
+                if let Some(bin) = windows_setup::mariadb_bin("mariadb").parent() {
+                    ensure_in_path(bin)?;
+                }
+            }
+            // No es motivo para dejar a medias lo demás: se puede repetir `cheka install`.
+            Err(e) => {
+                ui::warn(format!("{e:#}"));
+                ui::warn("¿Otro MySQL/MariaDB (Laragon, XAMPP) usa el puerto 3306? Detenlo y repite 'cheka install'");
+            }
+        }
     }
 
     step("Verificación");
     if test {
         ui::info("Omitido en modo prueba");
     } else {
-        if addresses(&format!("cheka-check.{TLD}")).iter().any(|ip| ip.is_loopback()) {
-            ui::ok(format!("*.{TLD} resuelve a 127.0.0.1 (archivo hosts)"));
+        // El DNS lo abre el daemon: puede tardar un momento en responder.
+        let mut resolved = false;
+        for _ in 0..20 {
+            if addresses(&format!("cheka-check.{TLD}")).iter().any(|ip| ip.is_loopback()) {
+                resolved = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        if resolved {
+            ui::ok(format!("*.{TLD} resuelve a 127.0.0.1"));
         } else {
-            ui::warn(format!("cheka-check.{TLD} no resuelve todavía: revisa {}", l.hosts_file().display()));
+            ui::warn(format!(
+                "*.{TLD} no resuelve todavía: revisa {} (¿otro programa usa el puerto 53?)",
+                l.log_dir.join("cheka-daemon.log").display()
+            ));
+        }
+        if !addresses("windows.com").is_empty() {
+            ui::ok("El DNS normal sigue funcionando");
+        } else {
+            ui::warn("No resuelve windows.com: revisa la regla con Get-DnsClientNrptRule");
         }
         // El servicio tarda un momento en abrir la pipe.
         let mut ok = false;
@@ -222,6 +262,7 @@ pub fn uninstall(ctx: &mut Ctx, args: &[String]) -> anyhow::Result<()> {
     if !l.is_test() {
         stop_service(crate::daemon::SERVICE_NAME);
         windows_setup::unregister_daemon()?;
+        windows_setup::remove_nrpt()?;
     }
     windows_setup::uninstall_apache(ctx)?;
     windows_setup::remove_hosts_block(&l)?;
@@ -240,7 +281,7 @@ pub fn uninstall(ctx: &mut Ctx, args: &[String]) -> anyhow::Result<()> {
             ctx.id.conf.display()
         ));
     }
-    ui::ok("Servicios de cheka y Apache eliminados y archivo hosts limpio. MariaDB y la CA de mkcert se conservan.");
+    ui::ok("Servicios de cheka y Apache, regla DNS y bloque del archivo hosts eliminados. MariaDB y la CA de mkcert se conservan.");
     ui::ok("Tus proyectos no se tocaron.");
     Ok(())
 }
