@@ -25,7 +25,7 @@ nix = { version = "0.31.3", features = ["user", "fs", "socket"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.1"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_Globalization", "Win32_System_Time"] }
 
 [workspace]
 members = ["ui"]

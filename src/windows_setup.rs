@@ -192,6 +192,108 @@ pub fn download_php(ctx: &Ctx, v: &str) -> Result<String> {
     Ok(rel.full)
 }
 
+// ---------------------------------------------------------------- extensiones ----
+
+/// Extensiones que se cargan con `zend_extension` en vez de `extension`.
+const ZEND_EXTENSIONS: [&str; 2] = ["opcache", "xdebug"];
+pub const PECL_RELEASES: &str = "https://downloads.php.net/~windows/pecl/releases";
+/// Extensiones de PECL que ofrece `php:info` para instalar (todas publican DLL NTS x64
+/// para 8.0–8.5). Cualquier otra de PECL también se puede instalar por nombre.
+const PECL_SUGGESTED: [&str; 11] =
+    ["apcu", "igbinary", "imagick", "memcache", "mongodb", "msgpack", "pcov", "redis", "ssh2", "xdebug", "yaml"];
+
+fn ext_dir(layout: &Layout, v: &str) -> PathBuf {
+    php_dir(layout, v).join("ext")
+}
+
+/// Extensiones que trae (o a las que se agregó) esta versión: `ext\php_*.dll`.
+pub fn available_extensions(layout: &Layout, v: &str) -> std::collections::BTreeSet<String> {
+    fs::read_dir(ext_dir(layout, v))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().to_lowercase();
+            Some(n.strip_prefix("php_")?.strip_suffix(".dll")?.to_string())
+        })
+        .collect()
+}
+
+/// ¿La activa cheka por defecto? (el equivalente a lo que activa el paquete de apt)
+pub fn default_enabled(layout: &Layout, v: &str, name: &str) -> bool {
+    (DEFAULT_EXTENSIONS.contains(&name) || name == "opcache")
+        && ext_dir(layout, v).join(format!("php_{name}.dll")).is_file()
+}
+
+/// Activa con los cambios de `cheka.toml` aplicados.
+pub fn extension_enabled(layout: &Layout, v: &str, name: &str, overrides: &BTreeMap<String, bool>) -> bool {
+    ext_dir(layout, v).join(format!("php_{name}.dll")).is_file()
+        && overrides.get(name).copied().unwrap_or_else(|| default_enabled(layout, v, name))
+}
+
+/// Extensiones sugeridas de PECL que esta versión aún no tiene.
+pub fn pecl_installable(layout: &Layout, v: &str) -> Vec<String> {
+    let have = available_extensions(layout, v);
+    PECL_SUGGESTED.iter().filter(|e| !have.contains(**e)).map(|e| e.to_string()).collect()
+}
+
+/// `php:ext <v> install <ext>` en Windows: la DLL de PECL para esta versión de PHP (NTS
+/// x64), el equivalente a `apt install phpX.Y-<ext>`. Busca la versión estable más nueva
+/// que tenga compilación para esta versión de PHP. Devuelve la versión instalada.
+pub fn install_pecl(ctx: &Ctx, v: &str, name: &str) -> Result<String> {
+    let l = &ctx.layout;
+    ui::info(format!("Buscando {name} en PECL para PHP {v}…"));
+    let listing = fetch_text(&format!("{PECL_RELEASES}/{name}/"))
+        .map_err(|_| anyhow!("PECL no publica DLL de Windows para '{name}'"))?;
+    let mut versions: Vec<String> = Regex::new(r#"href="([0-9][0-9.]*)/""#)?
+        .captures_iter(&listing)
+        .map(|c| c[1].to_string())
+        .collect();
+    let key = |s: &String| s.split('.').map(|p| p.parse::<u32>().unwrap_or(0)).collect::<Vec<_>>();
+    versions.sort_by_key(key);
+    let zip_re = |ver: &str| {
+        Regex::new(&format!(
+            r"php_{}-{}-{}-nts-v[sc]\d+-x64\.zip",
+            regex::escape(name),
+            regex::escape(ver),
+            regex::escape(v)
+        ))
+    };
+    let mut found = None;
+    for ver in versions.iter().rev().take(6) {
+        let dir = fetch_text(&format!("{PECL_RELEASES}/{name}/{ver}/")).unwrap_or_default();
+        if let Some(m) = zip_re(ver)?.find(&dir) {
+            found = Some((ver.clone(), m.as_str().to_string()));
+            break;
+        }
+    }
+    let (ver, file) = found.ok_or_else(|| anyhow!("No hay una DLL de {name} para PHP {v} (NTS x64) en PECL"))?;
+    let tmp = tempfile::tempdir()?;
+    let zip = tmp.path().join(&file);
+    ui::info(format!("Descargando {name} {ver}…"));
+    download(&format!("{PECL_RELEASES}/{name}/{ver}/{file}"), &zip)?;
+    let x = tmp.path().join("x");
+    unzip(&zip, &x)?;
+    let dll = x.join(format!("php_{name}.dll"));
+    if !dll.is_file() {
+        bail!("El zip de {name} no trae php_{name}.dll");
+    }
+    // La extensión va a ext\; las DLL que necesita (p. ej. las de ImageMagick), junto a
+    // php.exe, que es donde Windows las busca.
+    let dir = php_dir(l, v);
+    with_apache_stopped(ctx, || {
+        fs::copy(&dll, ext_dir(l, v).join(format!("php_{name}.dll")))?;
+        for e in fs::read_dir(&x)?.flatten() {
+            let n = e.file_name().to_string_lossy().to_lowercase();
+            if n.ends_with(".dll") && !n.starts_with("php_") {
+                fs::copy(e.path(), dir.join(e.file_name()))?;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(ver)
+}
+
 /// Certificados raíz para cURL y OpenSSL de PHP (Windows no expone los suyos a OpenSSL).
 pub fn cacert(layout: &Layout) -> PathBuf {
     layout.etc.join("cacert.pem")
@@ -218,16 +320,20 @@ pub fn write_php_ini(ctx: &Ctx, v: &str) -> Result<bool> {
     let l = &ctx.layout;
     let dir = php_dir(l, v);
     let ext_dir = dir.join("ext");
-    let has = |name: &str| ext_dir.join(format!("php_{name}.dll")).is_file();
-    let extensions: Vec<String> = DEFAULT_EXTENSIONS.iter().filter(|e| has(e)).map(|e| e.to_string()).collect();
+    // Lo que activa cheka por defecto, con los cambios de `cheka.toml` (`php:ext`). Desde
+    // PHP 8.5 OPcache viene incluido: no hay DLL y no se carga aparte.
+    let overrides = ctx.state.php.get(v).map(|s| s.extensions.clone()).unwrap_or_default();
+    let (zend, extensions): (Vec<String>, Vec<String>) = available_extensions(l, v)
+        .into_iter()
+        .filter(|e| extension_enabled(l, v, e, &overrides))
+        .partition(|e| ZEND_EXTENSIONS.contains(&e.as_str()));
     let mut text = render::windows_php_ini(
         l,
         &WindowsPhpIni {
             v,
             ext_dir: &ext_dir,
             extensions: &extensions,
-            // Desde PHP 8.5 OPcache viene incluido y no se carga aparte.
-            opcache: has("opcache"),
+            zend_extensions: &zend,
             cacert: &cacert(l),
             tz: &php::timezone(),
         },

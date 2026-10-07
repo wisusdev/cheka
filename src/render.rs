@@ -124,7 +124,8 @@ pub struct WindowsPhpIni<'a> {
     pub v: &'a str,
     pub ext_dir: &'a Path,
     pub extensions: &'a [String],
-    pub opcache: bool,
+    /// Las que van con `zend_extension` (OPcache, Xdebug).
+    pub zend_extensions: &'a [String],
     pub cacert: &'a Path,
     pub tz: &'a str,
 }
@@ -136,7 +137,7 @@ pub fn windows_php_ini(layout: &Layout, ini: &WindowsPhpIni) -> String {
             v => ini.v,
             ext_dir => slash(ini.ext_dir),
             extensions => ini.extensions,
-            opcache => ini.opcache,
+            zend_extensions => ini.zend_extensions,
             cacert => slash(ini.cacert),
             tz => ini.tz,
             log_dir => slash(&layout.log_dir),

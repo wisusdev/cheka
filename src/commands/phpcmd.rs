@@ -1,12 +1,15 @@
 //! Comandos de configuración de PHP: php:info, php:ini, php:ext, php:update, php:updates.
 
+#[cfg(unix)]
 use std::process::{Command, Stdio};
 
 use anyhow::{Result, bail};
 
 #[cfg(unix)]
 use super::download_static_php;
-use crate::phpconf::{self, is_apt};
+use crate::phpconf;
+#[cfg(unix)]
+use crate::phpconf::is_apt;
 use crate::{Ctx, php, refresh, ui};
 
 fn version_arg(args: &[String], usage: &str) -> Result<String> {
@@ -112,10 +115,7 @@ pub fn ext(ctx: &mut Ctx, args: &[String]) -> Result<()> {
     if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') || name.is_empty() {
         bail!("Nombre de extensión inválido: '{name}'");
     }
-    if cfg!(windows) {
-        bail!("En Windows cheka todavía no gestiona extensiones de PHP: activa las más comunes al instalar cada versión");
-    }
-    if !is_apt(&v) {
+    if !phpconf::can_manage_extensions(&v) {
         bail!(
             "PHP {v} es un binario estático: sus extensiones vienen compiladas y no se pueden cambiar. \
              Solo el PHP del sistema (apt) permite activar, desactivar o instalar extensiones."
@@ -138,6 +138,20 @@ pub fn ext(ctx: &mut Ctx, args: &[String]) -> Result<()> {
             ui::ok(format!("PHP {v}: {name} {}", if on { "activada" } else { "desactivada" }));
             refresh::request(ctx)
         }
+        #[cfg(windows)]
+        "install" => {
+            ctx.ensure_root()?;
+            if !php::installed(&ctx.layout, &v) {
+                bail!("PHP {v} no está instalado (instálalo con: cheka php:install {v})");
+            }
+            let ver = crate::windows_setup::install_pecl(ctx, &v, name)?;
+            // Como el paquete de apt: queda activa al instalarla.
+            ctx.state.php.entry(v.clone()).or_default().extensions.insert(name.clone(), true);
+            ctx.state.save(&ctx.id)?;
+            ui::ok(format!("{name} {ver} instalada y activada en PHP {v}"));
+            refresh::run(ctx).map(drop)
+        }
+        #[cfg(unix)]
         "install" => {
             ctx.ensure_root()?;
             let pkg = format!("php{v}-{name}");

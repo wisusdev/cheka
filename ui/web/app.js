@@ -369,11 +369,13 @@ function renderPhpDetail() {
   // Extensiones
   renderPhpExtensions();
   $("#pd-ext-note").textContent = info.can_manage_extensions
-    ? "Activar o desactivar una extensión solo afecta a cheka; el PHP del sistema no cambia."
+    ? WIN
+      ? "Activar o desactivar una extensión cambia el php.ini de esta versión. Las nuevas se instalan desde PECL."
+      : "Activar o desactivar una extensión solo afecta a cheka; el PHP del sistema no cambia."
     : "Binario estático: sus extensiones vienen compiladas y no se pueden cambiar. Para gestionarlas, usa una versión instalada con apt.";
   $("#pd-install").classList.toggle("hidden", !info.can_manage_extensions || !info.installable.length);
   if (info.can_manage_extensions && info.installable.length) {
-    const sel = h("select", { "aria-label": "Extensión para instalar" }, ...info.installable.map((p) => h("option", { value: p }, `php${info.version}-${p}`)));
+    const sel = h("select", { "aria-label": "Extensión para instalar" }, ...info.installable.map((p) => h("option", { value: p }, WIN ? `${p} (PECL)` : `php${info.version}-${p}`)));
     $("#pd-install").replaceChildren(sel, h("button", { class: "btn", onclick: (e) => detailAction(e.currentTarget, () => runRoot("php:ext", info.version, "install", sel.value)) }, "Instalar extensión"));
   }
 
