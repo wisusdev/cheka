@@ -423,9 +423,11 @@ pub fn install_mariadb(ctx: &Ctx) -> Result<()> {
          GRANT ALL PRIVILEGES ON *.* TO '{user}'@'127.0.0.1' WITH GRANT OPTION;\n\
          FLUSH PRIVILEGES;\n"
     );
+    // root sin contraseña por TCP: sin la opción, el cliente avisa que no verifica el
+    // certificado (no hay TLS que verificar en una conexión local).
     let root_tcp = |sql: &str| {
         Command::new(mariadb_bin("mariadb"))
-            .args(["--protocol=TCP", "-u", "root", "-h", "127.0.0.1", "-e", sql])
+            .args(["--protocol=TCP", "--disable-ssl-verify-server-cert", "-u", "root", "-h", "127.0.0.1", "-e", sql])
             .status()
             .is_ok_and(|s| s.success())
     };
@@ -456,7 +458,7 @@ pub fn install_mariadb(ctx: &Ctx) -> Result<()> {
     }
     // Cargar el plugin falla si ya está cargado: no importa.
     let _ = Command::new(mariadb_bin("mariadb"))
-        .args(["--protocol=TCP", "-u", "root", "-h", "127.0.0.1", "-e", "INSTALL SONAME 'auth_named_pipe'"])
+        .args(["--protocol=TCP", "--disable-ssl-verify-server-cert", "-u", "root", "-h", "127.0.0.1", "-e", "INSTALL SONAME 'auth_named_pipe'"])
         .stderr(Stdio::null())
         .status();
     let ok = root_tcp(&format!(

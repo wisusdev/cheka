@@ -134,8 +134,14 @@ pub fn install(ctx: &mut Ctx) -> anyhow::Result<()> {
         ctx.state.paths = vec![sites_dir.display().to_string()];
     }
     ctx.state.save(&ctx.id)?;
-    if !test && ensure_in_path(&l.bin)? {
-        ui::ok(format!("{} agregado al PATH (abre una terminal nueva para usar 'cheka')", l.bin.display()));
+    if !test {
+        if ensure_in_path(&l.bin)? {
+            ui::ok(format!("{} agregado al PATH", l.bin.display()));
+        }
+        // Las terminales ya abiertas no ven el PATH nuevo.
+        if crate::util::which("cheka").is_none() {
+            ui::warn("Abre una terminal nueva para usar 'cheka' (esta no ve el PATH actualizado)");
+        }
     }
     ui::ok(format!("cheka en {}", target.display()));
 
